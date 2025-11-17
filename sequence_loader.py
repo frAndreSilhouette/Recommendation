@@ -1,10 +1,16 @@
 import pandas as pd
 import os
+import random
+import copy
+import torch
 
 def load_and_preprocess(file_path="交易数据.feather"):
     print(">>> Loading data...")
     df = pd.read_feather(file_path)
-    df = df.iloc[:10000, :]
+    # df = df.iloc[:1000, :]
+    df = df[df['campus_zone_id']==143]
+    df = df[df['order_date']<='2024-06-30']
+    print(f">>> Total interactions: {len(df)}")
     df = df[["user_id", "spu_id", "order_date"]]
 
     # 排序
@@ -62,8 +68,46 @@ def build_sequences(df):
     return user_seqs
 
 
-def generate_samples(user_seqs):
-    train_samples, valid_samples, test_samples = [], [], []
+def disturb_sequence(seq, max_item_id, seed=None):
+    """
+    对序列进行随机扰动
+    - 序列长度 <= 5 不扰动
+    - 可选操作：
+        1. 删除 (cropping)
+        2. 交换相邻两个 item (swap)
+        3. 随机替换 (replace)
+    """
+    if seed is not None:
+        random.seed(seed)
+
+    is_tensor = isinstance(seq, torch.Tensor)
+    if is_tensor:
+        seq = seq.tolist()  # 转成 list 方便操作
+
+    n = len(seq)
+    if n <= 5:
+        return seq  # 太短不扰动
+
+    seq = copy.deepcopy(seq)
+    op = random.choice(['delete', 'swap', 'replace'])
+
+    if op == 'delete':
+        idx = random.randint(0, n - 1)
+        seq.pop(idx)
+    elif op == 'swap':
+        if n >= 2:
+            idx = random.randint(0, n - 2)
+            seq[idx], seq[idx + 1] = seq[idx + 1], seq[idx]
+    elif op == 'replace':
+        idx = random.randint(0, n - 1)
+        new_item = random.randint(0, max_item_id)
+        seq[idx] = new_item
+
+    return seq
+
+
+def generate_sequence(user_seqs, disturb=None, max_item_id=None):
+    train_sequences, valid_sequences, test_sequences = [], [], []
 
     for _, row in user_seqs.iterrows():
         u = row["user_id_new"]
@@ -76,19 +120,21 @@ def generate_samples(user_seqs):
         for i in range(1, len(seq) - 2):
             input_seq = seq[:i]
             target = seq[i]
-            train_samples.append((u, input_seq, target))
+            if disturb is not None and max_item_id is not None:
+                input_seq = disturb_sequence(input_seq, max_item_id, seed=disturb)
+            train_sequences.append((u, input_seq, target))
 
         # ---------- 验证集 ----------
         valid_input = seq[:-2]
         valid_target = seq[-2]
-        valid_samples.append((u, valid_input, valid_target))
+        valid_sequences.append((u, valid_input, valid_target))
 
         # ---------- 测试集 ----------
         test_input = seq[:-1]
         test_target = seq[-1]
-        test_samples.append((u, test_input, test_target))
+        test_sequences.append((u, test_input, test_target))
 
-    return train_samples, valid_samples, test_samples
+    return train_sequences, valid_sequences, test_sequences
 
 
 def write_file(samples, filepath):
@@ -98,7 +144,7 @@ def write_file(samples, filepath):
             f.write(f"{u} {seq_str} {tgt}\n")
 
 
-def main():
+def main(disturb=None):
     os.makedirs("./dataset", exist_ok=True)
 
     # Step1: load + encode
@@ -109,21 +155,23 @@ def main():
     user_seqs = build_sequences(df)
 
     # Step3: generate train/valid/test
-    train_samples, valid_samples, test_samples = generate_samples(user_seqs)
+    max_item_id = max(item2newid.values())
+    train_sequences, valid_sequences, test_sequences = generate_sequence(user_seqs, disturb=disturb, max_item_id=max_item_id)
 
     # Step4: write files
-    write_file(train_samples, "./dataset/train.txt")
-    write_file(valid_samples, "./dataset/valid.txt")
-    write_file(test_samples, "./dataset/test.txt")
+    write_file(train_sequences, "./dataset/train.txt")
+    write_file(valid_sequences, "./dataset/valid.txt")
+    write_file(test_sequences, "./dataset/test.txt")
 
     # Step5: 展示部分结果
     print("\n=== Train sample example ===")
-    print(train_samples[:3])
+    print(train_sequences[:3])
     print("\n=== Valid sample example ===")
-    print(valid_samples[:3])
+    print(valid_sequences[:3])
     print("\n=== Test sample example ===")
-    print(test_samples[:3])
+    print(test_sequences[:3])
 
 
 if __name__ == "__main__":
-    main()
+    # 传入扰动随机种子，例如 42；不扰动则传 None
+    main(disturb=42)

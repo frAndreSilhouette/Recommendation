@@ -66,6 +66,7 @@ def compute_item_graph(seqs, n_items):
     dist_cnt = defaultdict(int)
 
     for seq in seqs:
+        # print("[DEBUG]:seq", seq)
         length = len(seq)
         for i in range(length):
             for j in range(i+1, length):
@@ -74,6 +75,8 @@ def compute_item_graph(seqs, n_items):
                 dist = j - i
 
                 weight = 1.0 / dist
+
+                # print("[DEBUG]:item_i, item_j, weight", item_i, item_j, weight)
 
                 dist_sum[(item_i, item_j)] += weight
                 dist_sum[(item_j, item_i)] += weight
@@ -97,40 +100,53 @@ def compute_item_graph(seqs, n_items):
     return adj
 
 
-def build_and_save_graph(train_path, save_path="item_graph.pt"):
-    print(">>> Loading datasets...")
+def build_item_graph(train_samples, n_items):
+    """
+    直接从训练数据构造图，而不从文件读取
+    train_samples: list of (user_id, seq, target_item)
+    n_items: 商品总数
+    """
+    # 将训练样本转成 user2seqs
+    user2seqs = defaultdict(list)
+    for user, seq, target in train_samples:
+        user2seqs[user].append(seq)
 
-    u2s_train, items1 = load_sequences_from_file(train_path)
-
-    # 所有商品
-    all_items = sorted(list(items1))
-    n_items = max(all_items) + 1
-
-    print(f">>> Total item count = {n_items}")
-
-    print(">>> Extracting longest sequences per user...")
-    final_seqs = extract_last_sequences(u2s_train)
-
-    print(">>> Constructing adjacency matrix...")
+    final_seqs = extract_last_sequences(user2seqs)
     adj = compute_item_graph(final_seqs, n_items)
-
-    print(f">>> Saving graph to {save_path}")
-    torch.save(adj, save_path)
-
-    print(">>> Done.")
     return adj
 
 
 if __name__ == "__main__":
+    # Step1: 读取训练集
     train_path = "dataset/train.txt"
+    train_samples, _ = load_sequences_from_file(train_path)
 
-    adj = build_and_save_graph(train_path)
+    # 因为 load_sequences_from_file 返回的是 dict，需要转换为列表形式
+    train_samples_list = []
+    for u, seq_list in train_samples.items():
+        for seq in seq_list:
+            target = seq[-1]  # 假设最后一个 item 是目标
+            train_samples_list.append((u, seq, target))
+
+    # Step2: 计算 item 数量
+    all_items = set()
+    for _, seq, tgt in train_samples_list:
+        all_items.update(seq)
+        all_items.add(tgt)
+    num_items = max(all_items) + 1
+
+    # Step3: 构建图
+    adj = build_item_graph(train_samples_list, num_items)
+
     print("Graph size:", adj.shape)
     print("Number of edges:", adj._nnz())
 
-    # 转为稠密矩阵
-    dense_adj = adj.to_dense()
+    # Step4: 保存邻接矩阵
+    save_path = "item_graph.pt"
+    torch.save(adj, save_path)
+    print(f">>> Saved adjacency matrix to {save_path}")
 
-    # 显示前 10*10 的子矩阵
+    # 转为稠密矩阵查看
+    dense_adj = adj.to_dense()
     print(">>> Adjacency matrix (first 10x10 items):")
     print(dense_adj[:10, :10])
