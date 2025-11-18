@@ -2,7 +2,7 @@ import os
 import torch
 import numpy as np
 from collections import defaultdict
-
+from numba import njit
 
 def load_sequences_from_file(path):
     """
@@ -54,49 +54,149 @@ def extract_last_sequences(user2seqs):
     return last_seqs
 
 
-def compute_item_graph(seqs, n_items):
-    """
-    seqs: 所有用户的最终序列 (list of list)
-    n_items: 商品数量
-    构造 item-item 邻接矩阵，权重为 (平均倒数距离)，未共现为0
-    """
+# def compute_item_graph(seqs, n_items):
+#     """
+#     seqs: 所有用户的最终序列 (list of list)
+#     n_items: 商品数量
+#     构造 item-item 邻接矩阵，权重为 (平均倒数距离)，未共现为0
+#     """
 
-    # 用字典累积距离倒数
-    dist_sum = defaultdict(float)
-    dist_cnt = defaultdict(int)
+#     # 用字典累积距离倒数
+#     dist_sum = defaultdict(float)
+#     dist_cnt = defaultdict(int)
+
+#     for seq in seqs:
+#         # print("[DEBUG]:seq", seq)
+#         length = len(seq)
+#         for i in range(length):
+#             for j in range(i+1, length):
+#                 item_i = seq[i]
+#                 item_j = seq[j]
+#                 dist = j - i
+
+#                 weight = 1.0 / dist
+
+#                 # print("[DEBUG]:item_i, item_j, weight", item_i, item_j, weight)
+
+#                 dist_sum[(item_i, item_j)] += weight
+#                 dist_sum[(item_j, item_i)] += weight
+#                 dist_cnt[(item_i, item_j)] += 1
+#                 dist_cnt[(item_j, item_i)] += 1
+
+#     # 构造稀疏邻接矩阵
+#     rows, cols, vals = [], [], []
+
+#     for (i, j), s in dist_sum.items():
+#         avg_weight = s / dist_cnt[(i, j)]
+#         rows.append(i)
+#         cols.append(j)
+#         vals.append(avg_weight)
+
+#     # 转换为 PyTorch sparse tensor
+#     indices = torch.tensor([rows, cols], dtype=torch.long)
+#     values = torch.tensor(vals, dtype=torch.float32)
+#     adj = torch.sparse_coo_tensor(indices, values, (n_items, n_items))
+
+#     return adj
+
+# def compute_item_graph(seqs, n_items, max_dist=None):
+#     """
+#     seqs: list of sequences
+#     n_items: 商品总数
+#     max_dist: 只考虑 j - i <= max_dist 的共现（None 表示不限）
+#     """
+
+#     dist_sum = defaultdict(float)
+#     dist_cnt = defaultdict(int)
+
+#     for seq in seqs:
+#         L = len(seq)
+#         ds = dist_sum
+#         dc = dist_cnt
+
+#         for i in range(L):
+#             item_i = seq[i]
+#             base_i = item_i * n_items
+
+#             # ----------- 新增：限制 j 的最大范围 ----------------
+#             if max_dist is None:
+#                 end_j = L
+#             else:
+#                 end_j = min(L, i + 1 + max_dist)
+#             # ---------------------------------------------------
+
+#             for j in range(i+1, end_j):
+#                 item_j = seq[j]
+#                 dist = j - i  # dist <= max_dist 保证成立
+
+#                 w = 1.0 / dist
+
+#                 key1 = base_i + item_j
+#                 key2 = item_j * n_items + item_i
+
+#                 ds[key1] += w
+#                 dc[key1] += 1
+#                 ds[key2] += w
+#                 dc[key2] += 1
+
+#     # 预分配
+#     size = len(dist_sum)
+#     rows = [0] * size
+#     cols = [0] * size
+#     vals = [0.0] * size
+
+#     idx = 0
+#     for key, s in dist_sum.items():
+#         i = key // n_items
+#         j = key % n_items
+#         avg = s / dist_cnt[key]
+
+#         rows[idx] = i
+#         cols[idx] = j
+#         vals[idx] = avg
+#         idx += 1
+
+#     # 转为稀疏矩阵
+#     indices = torch.tensor([rows, cols], dtype=torch.long)
+#     values = torch.tensor(vals, dtype=torch.float32)
+#     adj = torch.sparse_coo_tensor(indices, values, (n_items, n_items))
+
+#     return adj
+
+def compute_item_graph(seqs, n_items, z=3):
+    """
+    构造 item-item 邻接矩阵（简化逻辑）
+    seqs: list of sequences
+    n_items: 商品总数
+    z: 最大距离阈值，如果两个 item 在序列中距离 <= z，则边权为1
+    """
+    edges = set()  # 保存所有出现的边
 
     for seq in seqs:
-        # print("[DEBUG]:seq", seq)
-        length = len(seq)
-        for i in range(length):
-            for j in range(i+1, length):
-                item_i = seq[i]
+        L = len(seq)
+        for i in range(L):
+            item_i = seq[i]
+            # 只考虑 item_j 与 item_i 的距离 <= z
+            end_j = min(L, i + 1 + z)
+            for j in range(i+1, end_j):
                 item_j = seq[j]
-                dist = j - i
+                # 添加无向边
+                edges.add((item_i, item_j))
+                edges.add((item_j, item_i))
 
-                weight = 1.0 / dist
+    if len(edges) == 0:
+        # 如果没有边，返回全零稀疏矩阵
+        return torch.sparse_coo_tensor(
+            indices=torch.empty((2,0), dtype=torch.long),
+            values=torch.empty((0,), dtype=torch.float32),
+            size=(n_items, n_items)
+        )
 
-                # print("[DEBUG]:item_i, item_j, weight", item_i, item_j, weight)
-
-                dist_sum[(item_i, item_j)] += weight
-                dist_sum[(item_j, item_i)] += weight
-                dist_cnt[(item_i, item_j)] += 1
-                dist_cnt[(item_j, item_i)] += 1
-
-    # 构造稀疏邻接矩阵
-    rows, cols, vals = [], [], []
-
-    for (i, j), s in dist_sum.items():
-        avg_weight = s / dist_cnt[(i, j)]
-        rows.append(i)
-        cols.append(j)
-        vals.append(avg_weight)
-
-    # 转换为 PyTorch sparse tensor
+    rows, cols = zip(*edges)
     indices = torch.tensor([rows, cols], dtype=torch.long)
-    values = torch.tensor(vals, dtype=torch.float32)
-    adj = torch.sparse_coo_tensor(indices, values, (n_items, n_items))
+    values = torch.ones(len(rows), dtype=torch.float32)  # 所有边权为1
 
+    adj = torch.sparse_coo_tensor(indices, values, (n_items, n_items))
     return adj
 
 
@@ -142,7 +242,7 @@ if __name__ == "__main__":
     print("Number of edges:", adj._nnz())
 
     # Step4: 保存邻接矩阵
-    save_path = "item_graph.pt"
+    save_path = "./log/item_graph.pt"
     torch.save(adj, save_path)
     print(f">>> Saved adjacency matrix to {save_path}")
 

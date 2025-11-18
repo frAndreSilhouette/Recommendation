@@ -4,11 +4,12 @@ import random
 import copy
 import torch
 
-def load_and_preprocess(file_path="交易数据.feather"):
+def load_and_preprocess(file_path="交易数据.feather", campus_id=143):
     print(">>> Loading data...")
     df = pd.read_feather(file_path)
     # df = df.iloc[:1000, :]
-    df = df[df['campus_zone_id']==143]
+    # print(df["campus_id"].unique())
+    df = df[df['campus_id']==campus_id]
     df = df[df['order_date']<='2024-06-30']
     print(f">>> Total interactions: {len(df)}")
     df = df[["user_id", "spu_id", "order_date"]]
@@ -16,10 +17,10 @@ def load_and_preprocess(file_path="交易数据.feather"):
     # 排序
     df = df.sort_values(["user_id", "order_date"]).reset_index(drop=True)
 
-    # ====== Step 1：过滤购买次数不足 4 的用户 ======
-    print(">>> Filtering users with < 4 interactions...")
+    # ====== Step 1：过滤购买次数不足 10 的用户 ======
+    print(">>> Filtering users with < 10 interactions...")
     user_counts = df.groupby("user_id")["spu_id"].count()
-    valid_users = user_counts[user_counts >= 4].index
+    valid_users = user_counts[user_counts >= 10].index
     df = df[df["user_id"].isin(valid_users)].reset_index(drop=True)
 
     # ====== Step 2：重新编码 user_id ======
@@ -105,7 +106,6 @@ def disturb_sequence(seq, max_item_id, seed=None):
 
     return seq
 
-
 def generate_sequence(user_seqs, disturb=None, max_item_id=None):
     train_sequences, valid_sequences, test_sequences = [], [], []
 
@@ -113,7 +113,7 @@ def generate_sequence(user_seqs, disturb=None, max_item_id=None):
         u = row["user_id_new"]
         seq = row["sequence"]
 
-        if len(seq) < 4:
+        if len(seq) < 10:
             continue
 
         # ---------- 训练集 ----------
