@@ -17,11 +17,17 @@ def load_and_preprocess(file_path="交易数据.feather", campus_id=143):
     # 排序
     df = df.sort_values(["user_id", "order_date"]).reset_index(drop=True)
 
-    # ====== Step 1：过滤购买次数不足 10 的用户 ======
-    print(">>> Filtering users with < 10 interactions...")
+    # ====== Step 1：过滤购买次数不足 threshold 的用户和商品 ======
+    filter_threshold = 10
+    print(f">>> Filtering users with < {filter_threshold} interactions...")
     user_counts = df.groupby("user_id")["spu_id"].count()
-    valid_users = user_counts[user_counts >= 10].index
+    valid_users = user_counts[user_counts >= filter_threshold].index
     df = df[df["user_id"].isin(valid_users)].reset_index(drop=True)
+
+    print(f">>> Filtering items purchased < {filter_threshold} times...")
+    item_counts = df.groupby("spu_id")["user_id"].count()
+    valid_items = item_counts[item_counts >= filter_threshold].index
+    df = df[df["spu_id"].isin(valid_items)].reset_index(drop=True)
 
     # ====== Step 2：重新编码 user_id ======
     print(">>> Encoding user_id...")
@@ -55,6 +61,9 @@ def load_and_preprocess(file_path="交易数据.feather", campus_id=143):
             return item2newid[x]
 
     df["spu_id_new"] = df["spu_id"].apply(encode_item)
+
+    print(f">>> Total users after preprocessing: {df['user_id_new'].nunique()}")
+    print(f">>> Total items after preprocessing: {df['spu_id_new'].nunique()}")
 
     return df, item2newid
 
