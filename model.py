@@ -94,22 +94,22 @@ class MultiViewRecommender(nn.Module):
         """
         # ---------------- Graph Embedding ----------------
         # 基于每条增强序列分别构造邻接矩阵
-        # time1 = time()
+        time1 = time()
         adj1 = build_item_graph([[user, seq, seq[-1]] for user, seq in enumerate(seq_aug1)], self.num_items)
         adj2 = build_item_graph([[user, seq, seq[-1]] for user, seq in enumerate(seq_aug2)], self.num_items)
-        # time1_1 = time()
-        # print(f"----构建图邻接矩阵耗时: {time1_1-time1:.2f}s")
+        time1_1 = time()
+        print(f"----构建图邻接矩阵耗时: {time1_1-time1:.2f}s")
 
         g_emb_1 = self.gcn_encoder(adj1)
         g_emb_2 = self.gcn_encoder(adj2)
-        # time2 = time()
-        # print(f"----构建图嵌入耗时: {time2-time1_1:.2f}s")
+        time2 = time()
+        print(f"----构建图嵌入耗时: {time2-time1_1:.2f}s")
 
         # ---------------- Sequence Embedding ----------------
         s_emb_1 = self.seq_encoder(seq_aug1)
         s_emb_2 = self.seq_encoder(seq_aug2)
-        # time3 = time()
-        # print(f"----构建序列嵌入耗时: {time3-time2:.2f}s")
+        time3 = time()
+        print(f"----构建序列嵌入耗时: {time3-time2:.2f}s")
 
         # ---------------- Contrastive Loss ----------------
         active_items = self.get_active_items(seq_aug1, seq_aug2)
@@ -122,16 +122,16 @@ class MultiViewRecommender(nn.Module):
         L_cross = self.info_nce_loss(g_avg, s_avg, active_items)
 
         L_CL = L_graph + L_seq + self.cross_weight * L_cross
-        # time4 = time()
-        # print(f"----构建对比损失耗时: {time4-time3:.2f}s")
+        time4 = time()
+        print(f"----构建对比损失耗时: {time4-time3:.2f}s")
 
         # ---------------- Attention Fusion ----------------
         combined = torch.cat([g_avg, s_avg], dim=1)
         alpha = torch.sigmoid(torch.matmul(combined, self.att_w)).unsqueeze(1)
         beta = 1.0 - alpha
         item_embeddings = alpha * g_avg + beta * s_avg
-        # time5 = time()
-        # print(f"----构建融合嵌入耗时: {time5-time4:.2f}s")
+        time5 = time()
+        print(f"----构建融合嵌入耗时: {time5-time4:.2f}s")
 
         return item_embeddings, L_CL
 

@@ -49,7 +49,7 @@ def train_model(model, train_samples, valid_samples, num_epochs=10, batch_size=1
             train_loader, 
             desc=f"Epoch {epoch+1}/{num_epochs} Training"
         ):
-            # time1 = time()
+            time1 = time()
             seq_batch = [seq.tolist() for seq in seq_batch]
             seq_batch = list(seq_batch)
 
@@ -60,29 +60,29 @@ def train_model(model, train_samples, valid_samples, num_epochs=10, batch_size=1
                 seq2 = disturb_sequence(seq, max_item_id=model.num_items-1)
                 seq_aug1.append(seq1)
                 seq_aug2.append(seq2)
-            # time2 = time()
-            # print(f"序列增强: {time2-time1:.2f}s")
+            time2 = time()
+            print(f"序列增强: {time2-time1:.2f}s")
 
             optimizer.zero_grad()
             item_embeds, L_CL = model(seq_aug1, seq_aug2)
-            # time3 = time()
-            # print(f"前向传播: {time3-time2:.2f}s")
+            time3 = time()
+            print(f"前向传播: {time3-time2:.2f}s")
 
             pred_scores = model.predict_next(seq_batch, item_embeds)
-            # time4 = time()
-            # print(f"预测: {time4-time3:.2f}s")
+            time4 = time()
+            print(f"预测: {time4-time3:.2f}s")
 
             # target_tensor = torch.tensor([s[2] for s in train_samples[:len(seq_batch)]], device=device)
             target_tensor = target_batch.to(device)
             L_pred = F.cross_entropy(pred_scores, target_tensor)
             L_total = model.cl_weight * L_CL + L_pred
-            # time5 = time()
-            # print(f"计算损失: {time5-time4:.2f}s")
+            time5 = time()
+            print(f"计算损失: {time5-time4:.2f}s")
 
             L_total.backward()
             optimizer.step()
-            # time6 = time()
-            # print(f"反向传播: {time6-time5:.2f}s")
+            time6 = time()
+            print(f"反向传播: {time6-time5:.2f}s")
 
             total_loss += L_total.item()
             total_LCL += L_CL.item()
@@ -121,6 +121,7 @@ def train_model(model, train_samples, valid_samples, num_epochs=10, batch_size=1
             torch.save(model.state_dict(), "./log/best_model.pt")
         else:
             no_improve_count += 1
+            print(f"No improvement for {no_improve_count} epochs")
             if no_improve_count >= early_stop_patience:
                 print(f"Early stopping at epoch {epoch+1}")
                 break
