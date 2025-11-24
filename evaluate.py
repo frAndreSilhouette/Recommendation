@@ -31,43 +31,12 @@ def hit_ndcg(scores, targets, k_list=[5,10,20]):
 
 # ---------------- 测试集评估 ----------------
 def evaluate_model(model, test_samples, k_list=[5,10,20], device='cuda'):
+    test_users = [s[0] for s in test_samples]
     test_seqs = [s[1] for s in test_samples]
     test_targets = torch.tensor([s[2] for s in test_samples], device=device)
     model.eval()
     with torch.no_grad():
-        item_embeds, _ = model([s for s in test_seqs], [s for s in test_seqs])
-        scores = model.predict_next(test_seqs, item_embeds)
+        user_emb, item_emb, _ = model(test_seqs, test_users, test_seqs, test_seqs)
+        scores = model.predict(user_emb, item_emb)
         metrics = hit_ndcg(scores, test_targets, k_list=k_list)
     return metrics
-
-# def evaluate_model(model, test_samples, k_list=[5,10,20], device='cuda'):
-#     test_seqs = [s[1] for s in test_samples]
-#     test_targets = torch.tensor([s[2] for s in test_samples], device='cpu')  # 回 CPU
-
-#     batch_size = 128
-
-#     model.eval()
-#     with torch.no_grad():
-#         # ---------- 逐条计算 item_embeds，存 CPU ----------
-#         item_embeds_list = []
-#         for seq in tqdm(test_seqs, desc="Test Embeds"):
-#             emb, _ = model([seq], [seq])
-#             item_embeds_list.append(emb.cpu())
-#         item_embeds = torch.cat(item_embeds_list, dim=0)
-
-#         # ---------- 逐条预测，每条 seq 分 batch 处理 embedding ----------
-#         scores_list = []
-#         for seq in tqdm(test_seqs, desc="Test Predict"):
-#             seq_scores_batches = []
-#             for i in range(0, item_embeds.size(0), batch_size):
-#                 emb_batch = item_embeds[i:i+batch_size].to(device)
-#                 score_batch = model.predict_next([seq], emb_batch)
-#                 seq_scores_batches.append(score_batch.cpu())  # 预测结果回 CPU
-#             seq_scores = torch.cat(seq_scores_batches, dim=1)
-#             scores_list.append(seq_scores)
-
-#         scores = torch.cat(scores_list, dim=0)
-#         scores = F.softmax(scores, dim=1) # softmax归一化
-
-#         metrics = hit_ndcg(scores, test_targets, k_list=k_list)
-#     return metrics

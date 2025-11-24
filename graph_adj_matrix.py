@@ -77,14 +77,13 @@ def compute_user_item_graph(seqs_with_user, n_users, n_items):
     adj = torch.sparse_coo_tensor(indices, values, size=(n_users + n_items, n_users + n_items))
     return adj
 
-
 def build_user_item_graph(train_samples, n_users, n_items):
     """
     从训练数据构造用户-商品邻接矩阵（只考虑 user-item 边）
     train_samples: list of (user_id, seq, target_item)
     """
     user2seqs = defaultdict(list)
-    for user, seq, target in train_samples:
+    for user, seq, _ in train_samples:
         user2seqs[user].append(seq)
 
     final_seqs = extract_last_sequences(user2seqs)  # list of (user_id, seq)

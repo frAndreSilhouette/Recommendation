@@ -122,16 +122,21 @@ def generate_sequence(user_seqs, disturb=None, max_item_id=None):
         u = row["user_id_new"]
         seq = row["sequence"]
 
-        if len(seq) < 10:
+        if len(seq) < 5:
             continue
 
         # ---------- 训练集 ----------
-        for i in range(1, len(seq) - 2):
-            input_seq = seq[:i]
-            target = seq[i]
-            if disturb is not None and max_item_id is not None:
-                input_seq = disturb_sequence(input_seq, max_item_id, seed=disturb)
-            train_sequences.append((u, input_seq, target))
+        # for i in range(1, len(seq) - 2):
+        #     input_seq = seq[:i]
+        #     target = seq[i]
+        #     if disturb is not None and max_item_id is not None:
+        #         input_seq = disturb_sequence(input_seq, max_item_id, seed=disturb)
+        #     train_sequences.append((u, input_seq, target))
+
+        # 新的训练集方案：为每个用户只生成一条
+        train_input = seq[:-3]
+        train_target = seq[-3]
+        train_sequences.append((u, train_input, train_target))
 
         # ---------- 验证集 ----------
         valid_input = seq[:-2]
@@ -151,36 +156,3 @@ def write_file(samples, filepath):
         for u, seq, tgt in samples:
             seq_str = ",".join(str(i) for i in seq)
             f.write(f"{u} {seq_str} {tgt}\n")
-
-
-def main(disturb=None):
-    os.makedirs("./dataset", exist_ok=True)
-
-    # Step1: load + encode
-    df, item2newid = load_and_preprocess("交易数据.feather")
-    print(f">>> Total items after encoding: {len(item2newid)}")
-
-    # Step2: build sequences
-    user_seqs = build_sequences(df)
-
-    # Step3: generate train/valid/test
-    max_item_id = max(item2newid.values())
-    train_sequences, valid_sequences, test_sequences = generate_sequence(user_seqs, disturb=disturb, max_item_id=max_item_id)
-
-    # Step4: write files
-    write_file(train_sequences, "./dataset/train.txt")
-    write_file(valid_sequences, "./dataset/valid.txt")
-    write_file(test_sequences, "./dataset/test.txt")
-
-    # Step5: 展示部分结果
-    print("\n=== Train sample example ===")
-    print(train_sequences[:3])
-    print("\n=== Valid sample example ===")
-    print(valid_sequences[:3])
-    print("\n=== Test sample example ===")
-    print(test_sequences[:3])
-
-
-if __name__ == "__main__":
-    # 传入扰动随机种子，例如 42；不扰动则传 None
-    main(disturb=42)

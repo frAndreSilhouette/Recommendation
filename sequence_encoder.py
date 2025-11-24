@@ -23,8 +23,8 @@ class SequenceEncoder(nn.Module):
     - 返回所有 item embedding (num_items, D)
     - 可选对比学习扰动
     """
-    def __init__(self, num_items, embed_dim=64, max_len=50,
-                 block_num=2, head_num=2, drop_rate=0.1, eps=0.1, device='cuda'):
+    def __init__(self, num_items, embed_dim=64, max_len=15,
+                 block_num=2, head_num=1, drop_rate=0.2, eps=0.1, device='cuda'):
         super().__init__()
         self.device = device
         self.num_items = num_items
@@ -117,5 +117,5 @@ class SequenceEncoder(nn.Module):
             seq_emb_perturbed = seq_emb + noise
             return seq_emb, seq_emb_perturbed
 
-        return seq_emb # 维度是[batch_size, seq_len, embed_dim]
+        return seq_emb # 维度是[batch_size, seq_len, embed_dim]，输入序列没有填充，但是输出结果有填充
         

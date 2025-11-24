@@ -2,13 +2,28 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import random
-from time import time
+import time
 from tqdm import tqdm
 
 from graph_adj_matrix import build_user_item_graph
 from graph_encoder import GraphConvolutionalEncoder
 from sequence_encoder import SequenceEncoder
 
+class AttentionFusion(nn.Module):
+    def __init__(self, embed_dim):
+        super(AttentionFusion, self).__init__()
+        self.embed_dim = embed_dim
+        self.attn_weights = nn.Parameter(torch.zeros(2, embed_dim))  # 两个来源的权重
+
+    def forward(self, emb1, emb2):
+        """
+        emb1, emb2: [batch_size, embed_dim]，两个来源的 embedding
+        返回加权后的融合 embedding
+        """
+        # 计算两个 embedding 的加权和
+        weight1 = torch.sigmoid(self.attn_weights[0])  # [embed_dim]，sigmoid 让它在 0 到 1 之间
+        weight2 = torch.sigmoid(self.attn_weights[1])
+        return weight1 * emb1 + weight2 * emb2  # 通过加权和融合
 
 # ---------------- Multi-View Model ----------------
 class MultiViewRecommender(nn.Module):
@@ -19,132 +34,165 @@ class MultiViewRecommender(nn.Module):
     - Attention 融合 Graph+Seq embedding
     - Transformer 对用户历史序列进行编码
     """
-    def __init__(self, num_items, embed_dim=64, seq_hidden_dim=64, gcn_layers=2, seq_layer=1, device='cuda'):
+    def __init__(self, num_users, num_items, embed_dim=64, device='cuda'):
         super().__init__()
         self.device = device
+        self.num_users = num_users
         self.num_items = num_items
         self.embed_dim = embed_dim
 
-        self.cross_weight = 1.0
-        self.cl_weight = 1.0
+        self.CL_loss_graph_weight = 1.0
+        self.CL_loss_sequence_weight = 1.0
+        self.CL_loss_weight = 1.0
 
         # Graph encoder
-        # self.gcn_layers = gcn_layers
-        # self.gcn_encoder = GraphConvolutionalEncoder(num_items=self.num_items,
-        #                                               embed_dim=self.embed_dim,
-        #                                               num_layers=self.gcn_layers,
-        #                                               device=self.device)
+        self.gcn_encoder = GraphConvolutionalEncoder(num_users=self.num_users,
+                                                      num_items=self.num_items,
+                                                      embed_dim=self.embed_dim,
+                                                      device=self.device)
 
         # Sequence encoder
-        self.seq_layer = seq_layer
-        self.seq_hidden_dim = seq_hidden_dim
+        self.seq_max_length = 15
         self.seq_encoder = SequenceEncoder(num_items = self.num_items,
                                            embed_dim=self.embed_dim,
-                                        #    hidden_dim=self.seq_hidden_dim,
-                                        #    num_layers=self.seq_layer,
+                                           max_len=self.seq_max_length,
                                            device=self.device)
 
-        # 将 sequence 输出的 hidden_dim 投影到 embed_dim 以便与 GCN 融合
-        # 如果seq_hidden_dim == embed_dim，则不需要self.seq_project
-        self.seq_project = nn.Linear(seq_hidden_dim, embed_dim).to(device)
-
         # Attention fusion参数
-        self.att_w = nn.Parameter(torch.randn(embed_dim * 2))
-
-        # 用户 Transformer encoder
-        self.user_transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model=embed_dim, nhead=1, batch_first=True),
-            num_layers=1
-        )
+        self.user_attention = AttentionFusion(self.embed_dim)
+        self.item_attention = AttentionFusion(self.embed_dim)
 
         self.to(device)
 
     # ---------------- InfoNCE 对比学习 ----------------
-    @staticmethod
-    def get_active_items(seq_aug1, seq_aug2):
-        active_items = set()
-        for seq in seq_aug1 + seq_aug2:
-            active_items.update(seq)
-        return list(active_items)
+    # @staticmethod
+    # def get_active_items(seq_aug1, seq_aug2):
+    #     active_items = set()
+    #     for seq in seq_aug1 + seq_aug2:
+    #         active_items.update(seq)
+    #     return list(active_items)
     @staticmethod
     def info_nce_loss(e1, e2, temperature=1):
-        num_items = e1.size(0)
+        num_elements = e1.size(0) # 不局限于item，也可以是user，也可以是sequence
 
         losses = []
-        for i in range(num_items):
-        # for i in tqdm(active_idx, desc=f"Calculating CL loss for {num_active_items} items among {num_items}", ncols=80):
+        for i in range(num_elements):
             pos_sim = F.cosine_similarity(e1[i:i+1], e2[i:i+1])
-            neg_idx = random.randint(0, num_items - 1)
+            neg_idx = random.randint(0, num_elements - 1)
             while neg_idx == i:
-                neg_idx = random.randint(0, num_items - 1)
+                neg_idx = random.randint(0, num_elements - 1)
             neg_sim = F.cosine_similarity(e1[i:i+1], e2[neg_idx:neg_idx+1])
             loss = -torch.log(torch.exp(pos_sim/temperature) / (torch.exp(pos_sim/temperature) + torch.exp(neg_sim/temperature)))
             losses.append(loss)
         return torch.stack(losses).mean()
 
     # ---------------- Forward ----------------
-    def forward(self, seq_aug1, seq_aug2):
+    def forward(self, seq, user, seq_aug1=None, seq_aug2=None):
         """
         输入:
+            seq: 原始的用户购买序列
+            user: 对应的用户id列表
             seq_aug1/seq_aug2: list of list，每个子列表为用户增强序列
         输出:
             item_embeddings: [num_items, embed_dim]
             L_CL: contrastive learning loss
         """
-        # ---------------- Graph Embedding ----------------
-        # 基于每条增强序列分别构造邻接矩阵
-        # time1 = time()
-        # adj1 = build_item_graph([[user, seq, seq[-1]] for user, seq in enumerate(seq_aug1)], self.num_items)
-        # adj2 = build_item_graph([[user, seq, seq[-1]] for user, seq in enumerate(seq_aug2)], self.num_items)
-        # time1_1 = time()
-        # print(f"----构建图邻接矩阵耗时: {time1_1-time1:.2f}s")
 
-        # g_emb_1 = self.gcn_encoder(adj1)
-        # g_emb_2 = self.gcn_encoder(adj2)
-        # time2 = time()
-        # print(f"----构建图嵌入耗时: {time2-time1_1:.2f}s")
+        # 【方案1】embedding扰动
+        if seq_aug1 is None or seq_aug2 is None:
+            seq_lengths = [len(s) for s in seq]
+            # ---------------- Graph Embedding ----------------
+            adj = build_user_item_graph([[user, s, None] for user, s in enumerate(seq)], self.num_users, self.num_items)
+            graph_user_emb, graph_item_emb, graph_user_emb_cl, graph_item_emb_cl = self.gcn_encoder(adj, perturbed=True)
 
-        # ---------------- Sequence Embedding ----------------
-        s_emb_1 = self.seq_encoder(seq_aug1)
-        s_emb_2 = self.seq_encoder(seq_aug2)
-        # 注意，这里返回的是序列中的单品的embedding，而不是单品的embedding
-        # 维度是[batch_size, seq_len, embed_dim]
-        # 所以接下来在seq_len上取平均，得到每条序列的embedding
-        s_avg_emb_1 = s_emb_1.mean(dim=1)
-        s_avg_emb_2 = s_emb_2.mean(dim=1)
+            # ---------------- Sequence Embedding ----------------
+            sequence_emb, sequence_emb_cl = self.seq_encoder(seq, perturbed=True)
+            # 注意，这里返回的是序列中的单品的embedding，而不是单品的embedding
+            # 维度是[batch_size, seq_len, embed_dim]
+            # 所以接下来以填充前的最后一个item的embedding作为每条序列的embedding（原论文做法）
+            last_indices = (torch.tensor(seq_lengths) - 1).to(self.device)
+            last_indices = torch.clamp(last_indices, min=0, max=self.seq_max_length - 1)
+            sequence_last_emb = sequence_emb[torch.arange(len(seq)).to(self.device), last_indices]
+            sequence_last_emb_cl = sequence_emb_cl[torch.arange(len(seq)).to(self.device), last_indices]
 
-        # time3 = time()
-        # print(f"----构建序列嵌入耗时: {time3-time2:.2f}s")
+            # TOBECONTINUED
 
-        # ---------------- Contrastive Loss ----------------
-        # active_items = self.get_active_items(seq_aug1, seq_aug2)
 
-        # L_graph = self.info_nce_loss(g_emb_1, g_emb_2, active_items)
-        L_seq  = self.info_nce_loss(s_emb_1, s_emb_2) # 这里相当于把序列当成item来计算对比损失
+        # 【方案2】序列扰动
+        else:
+            seq_aug1_lengths = [len(s) for s in seq_aug1]
+            seq_aug2_lengths = [len(s) for s in seq_aug2]
 
-        # g_avg = 0.5 * (g_emb_1 + g_emb_2)
-        s_avg = 0.5 * (s_avg_emb_1 + s_avg_emb_2)
-        # L_cross = self.info_nce_loss(g_avg, s_avg, active_items)
+            # ---------------- Graph Embedding ----------------
+            # 基于每条增强序列分别构造邻接矩阵
+            adj1 = build_user_item_graph([[user, s, None] for user, s in enumerate(seq_aug1)], self.num_users, self.num_items)
+            adj2 = build_user_item_graph([[user, s, None] for user, s in enumerate(seq_aug2)], self.num_users, self.num_items)
+            
+            graph_user_emb1, graph_item_emb1 = self.gcn_encoder(adj1, perturbed=False)
+            graph_user_emb2, graph_item_emb2 = self.gcn_encoder(adj2, perturbed=False)
 
-        # L_CL = L_graph + L_seq + self.cross_weight * L_cross
-        L_CL = 0.0 * L_seq
-        # time4 = time()
-        # print(f"----构建对比损失耗时: {time4-time3:.2f}s")
+            # ---------------- Sequence Embedding ----------------
+            sequence_emb_1 = self.seq_encoder(seq_aug1)
+            sequence_emb_2 = self.seq_encoder(seq_aug2)
+            # 注意，这里返回的是序列中的单品的embedding，而不是单品的embedding
+            # 维度是[batch_size, seq_len, embed_dim]
+            # 所以接下来以填充前的最后一个item的embedding作为每条序列的embedding（原论文做法）
+            last_indices1 = (torch.tensor(seq_aug1_lengths) - 1).to(self.device)
+            last_indices2 = (torch.tensor(seq_aug2_lengths) - 1).to(self.device)
+            last_indices1 = torch.clamp(last_indices1, min=0, max=self.seq_max_length - 1)
+            last_indices2 = torch.clamp(last_indices2, min=0, max=self.seq_max_length - 1)
+            sequence_last_emb_1 = sequence_emb_1[torch.arange(len(seq_aug1)).to(self.device), last_indices1]
+            sequence_last_emb_2 = sequence_emb_2[torch.arange(len(seq_aug2)).to(self.device), last_indices2]
+    
+            # 到现在，已有
+            # graph：user和item的embedding
+            # sequence：序列的embedding（也可以有item的embedding，但是还没提取出来，也产生不了两个视图）
+            
+            # ---------------- Contrastive Loss ----------------
+            CL_loss_graph_user = self.info_nce_loss(graph_user_emb1, graph_user_emb2)
+            CL_loss_graph_item = self.info_nce_loss(graph_item_emb1, graph_item_emb2)
+            CL_loss_graph = CL_loss_graph_user + CL_loss_graph_item
 
-        # # ---------------- Attention Fusion ----------------
-        # combined = torch.cat([g_avg, s_avg], dim=1)
-        # alpha = torch.sigmoid(torch.matmul(combined, self.att_w)).unsqueeze(1)
-        # beta = 1.0 - alpha
-        # item_embeddings = alpha * g_avg + beta * s_avg
-        item_embeddings = self.seq_encoder.item_emb[:self.num_items]
-        # time5 = time()
-        # print(f"----构建融合嵌入耗时: {time5-time4:.2f}s")
+            CL_loss_sequence = self.info_nce_loss(sequence_last_emb_1, sequence_last_emb_2)
 
-        return item_embeddings, L_CL
+            CL_loss = self.CL_loss_graph_weight * CL_loss_graph + self.CL_loss_sequence_weight * CL_loss_sequence
 
-    # ---------------- 用户编码 + 预测 ----------------
-    def predict_next(self, user_seqs, item_embeddings):
-        seq_embeds = self.seq_encoder(user_seqs).mean(dim=1)
-        scores = torch.matmul(seq_embeds, item_embeddings.t())
-        return F.softmax(scores, dim=1)
-        # return scores # 不进行softmax归一化
+            # 未考虑跨图-序列的对比损失
+
+            # ---------------- Attention Fusion ----------------
+            if graph_user_emb1.shape[0] < max(user) or graph_user_emb2.shape[0] < max(user):
+                print('DEBUG graph_user_emb1.shape:', graph_user_emb1.shape)
+                print('DEBUG graph_user_emb2.shape:', graph_user_emb2.shape)
+                print('DEBUG user:', max(user))
+                time.sleep(1000)
+            graph_user_avg_emb = 0.5 * (graph_user_emb1 + graph_user_emb2)[user]
+            graph_item_avg_emb = 0.5 * (graph_item_emb1 + graph_item_emb2)
+
+            sequence_user_avg_emb = 0.5 * (sequence_last_emb_1 + sequence_last_emb_2)
+            sequence_item_avg_emb = self.seq_encoder.item_emb[:self.num_items]
+            
+            # 注意，此时得到的user embedding只有batch_size个用户，而非全部的num_users个用户
+            # 而且是按照batch里面的出现顺序排列的，不是按照id顺序排列的
+            # 但无所谓，反正我也不预测该batch没有出现的那些用户的行为
+
+            user_emb = self.user_attention(graph_user_avg_emb, sequence_user_avg_emb)
+            item_emb = self.item_attention(graph_item_avg_emb, sequence_item_avg_emb)
+
+            return user_emb, item_emb, CL_loss
+
+    # ---------------- 预测 ----------------
+    def predict(self, user_emb, item_emb):
+        """
+        预测用户对物品的偏好分数（或概率）
+        输入:
+            user_emb: [batch_size, embed_dim] 用户的最终嵌入（不是全部的num_users个用户）
+            item_emb: [num_items, embed_dim] 物品的最终嵌入
+        输出:
+            scores: [batch_size, num_items] 用户与物品的相似度分数
+        """
+        # 计算用户与物品的相似度，通过矩阵乘法（点积）
+        scores = torch.matmul(user_emb, item_emb.t())  # [batch_size, num_items]
+        
+        # 使用 softmax 对每个用户的所有物品进行归一化（按行归一化）
+        scores = F.softmax(scores, dim=1)  # [batch_size, num_items]
+        return scores

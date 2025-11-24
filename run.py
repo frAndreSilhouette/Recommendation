@@ -33,25 +33,28 @@ def train_model(model, train_samples, valid_samples, num_epochs=10, batch_size=1
     no_improve_count = 0
 
     # 提取训练集输入
+    train_users = [s[0] for s in train_samples]
     train_seqs = [s[1] for s in train_samples]
     train_targets = torch.tensor([s[2] for s in train_samples], device=device)
 
     # 提取验证集输入
+    valid_users = [s[0] for s in valid_samples]
     valid_seqs = [s[1] for s in valid_samples]
     valid_targets = torch.tensor([s[2] for s in valid_samples], device=device)
 
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0.0
-        total_LCL = 0.0  # 总对比损失
-        total_Lpred = 0.0  # 总预测损失
+        total_CL_loss = 0.0  # 总对比损失
+        total_pred_loss = 0.0  # 总预测损失
         for seq_batch, user_batch, target_batch in tqdm(
             train_loader, 
             desc=f"Epoch {epoch+1}/{num_epochs} Training"
         ):
-            # time1 = time()
             seq_batch = [seq.tolist() for seq in seq_batch]
             seq_batch = list(seq_batch)
+
+            user = list(user_batch)
 
             # 两个随机增强序列
             seq_aug1, seq_aug2 = [], []
@@ -60,57 +63,34 @@ def train_model(model, train_samples, valid_samples, num_epochs=10, batch_size=1
                 seq2 = disturb_sequence(seq, max_item_id=model.num_items-1)
                 seq_aug1.append(seq1)
                 seq_aug2.append(seq2)
-            # time2 = time()
-            # print(f"序列增强: {time2-time1:.2f}s")
 
             optimizer.zero_grad()
-            item_embeds, L_CL = model(seq_aug1, seq_aug2)
-            # print("111 Item Embedding", item_embeds.shape)
-            # time3 = time()
-            # print(f"前向传播: {time3-time2:.2f}s")
+            user_emb, item_emb, CL_loss = model(seq_batch, user, seq_aug1, seq_aug2)
 
-            pred_scores = model.predict_next(seq_batch, item_embeds)
-            # time4 = time()
-            # print(f"预测: {time4-time3:.2f}s")
+            pred_scores = model.predict(user_emb, item_emb)
 
-            # target_tensor = torch.tensor([s[2] for s in train_samples[:len(seq_batch)]], device=device)
             target_tensor = target_batch.to(device)
-            # print("222 Target Tensor", target_tensor.shape)
-            # print("333 Pred Scores", pred_scores.shape)
-            L_pred = F.cross_entropy(pred_scores, target_tensor)
-            L_total = model.cl_weight * L_CL + L_pred
-            # time5 = time()
-            # print(f"计算损失: {time5-time4:.2f}s")
+            pred_loss = F.cross_entropy(pred_scores, target_tensor)
 
-            L_total.backward()
+            loss = model.CL_loss_weight * CL_loss + pred_loss
+            loss.backward()
             optimizer.step()
-            # time6 = time()
-            # print(f"反向传播: {time6-time5:.2f}s")
 
-            total_loss += L_total.item()
-            total_LCL += L_CL.item()
-            total_Lpred += L_pred.item()
+            total_loss += loss.item()
+            total_CL_loss += CL_loss.item()
+            total_pred_loss += pred_loss.item()
 
         avg_loss = total_loss / len(train_loader)
-        avg_LCL = total_LCL / len(train_loader)
-        avg_Lpred = total_Lpred / len(train_loader)
+        avg_CL_loss = total_CL_loss / len(train_loader)
+        avg_pred_loss = total_pred_loss / len(train_loader)
 
-        # ---------- 训练集指标 ----------
-        # with torch.no_grad():
-        #     item_embeds, _ = model([s for s in train_seqs], [s for s in train_seqs])
-        #     train_scores = model.predict_next([s[1] for s in train_samples], item_embeds)
-        #     train_metrics = hit_ndcg(train_scores, train_targets, k_list=[10])
-        #     train_hr10 = train_metrics['HR@10']
-        #     train_ndcg10 = train_metrics['NDCG@10']
-
-        # print(f"Epoch {epoch+1}/{num_epochs} - Train L_CL={avg_LCL:.4f}, L_pred={avg_Lpred:.4f}, Total Loss={avg_loss:.4f}, HR@10={train_hr10:.4f}, NDCG@10={train_ndcg10:.4f}")
-        print(f"Epoch {epoch+1}/{num_epochs} - Train L_CL={avg_LCL:.4f}, L_pred={avg_Lpred:.4f}, Total Loss={avg_loss:.4f}")
+        print(f"Epoch {epoch+1}/{num_epochs} - Train CL loss={avg_CL_loss:.4f}, prediction loss={avg_pred_loss:.4f}, total Loss={avg_loss:.4f}")
 
         # ---------- 验证集评估 ----------
         model.eval()
         with torch.no_grad():
-            item_embeds, _ = model([s for s in valid_seqs], [s for s in valid_seqs])
-            valid_scores = model.predict_next(valid_seqs, item_embeds)
+            user_emb, item_emb, _ = model(valid_seqs, valid_users, valid_seqs, valid_seqs)
+            valid_scores = model.predict(user_emb, item_emb)
             metrics = hit_ndcg(valid_scores, valid_targets, k_list=[10])
             valid_hr10 = metrics['HR@10']
             valid_ndcg10 = metrics['NDCG@10']
@@ -124,6 +104,7 @@ def train_model(model, train_samples, valid_samples, num_epochs=10, batch_size=1
             torch.save(model.state_dict(), "./log/best_model.pt")
         else:
             no_improve_count += 1
+            print(f"No improvement for {no_improve_count} epochs")
             if no_improve_count >= early_stop_patience:
                 print(f"Early stopping at epoch {epoch+1}")
                 break
@@ -155,9 +136,15 @@ if __name__ == "__main__":
             max(s[2] for s in test_samples)
         ) + 1
 
-        model = MultiViewRecommender(num_items=num_items, embed_dim=32, seq_hidden_dim=32, device=device)
+        num_users = max(
+            max(s[0] for s in train_samples),
+            max(s[0] for s in valid_samples),
+            max(s[0] for s in test_samples)
+        ) + 1
 
-        model = train_model(model, train_samples, valid_samples, num_epochs=100, batch_size=2048, lr=1e-3, device=device, early_stop_patience=5)
+        model = MultiViewRecommender(num_users=num_users, num_items=num_items, embed_dim=64, device=device)
+
+        model = train_model(model, train_samples, valid_samples, num_epochs=200, batch_size=1024, lr=1e-3, device=device, early_stop_patience=200)
 
         test_metrics = evaluate_model(model, test_samples, k_list=[5,10,20], device=device)
         print("=== Test Set Metrics ===")
