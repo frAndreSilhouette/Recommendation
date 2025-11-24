@@ -10,7 +10,7 @@ import os
 from time import time
 
 from sequence_loader import generate_sequence, build_sequences, load_and_preprocess, disturb_sequence
-from graph_adj_matrix import build_item_graph
+from graph_adj_matrix import build_user_item_graph
 from graph_encoder import GraphConvolutionalEncoder
 from sequence_encoder import SequenceEncoder
 from evaluate import evaluate_model, hit_ndcg
@@ -65,6 +65,7 @@ def train_model(model, train_samples, valid_samples, num_epochs=10, batch_size=1
 
             optimizer.zero_grad()
             item_embeds, L_CL = model(seq_aug1, seq_aug2)
+            # print("111 Item Embedding", item_embeds.shape)
             # time3 = time()
             # print(f"前向传播: {time3-time2:.2f}s")
 
@@ -74,6 +75,8 @@ def train_model(model, train_samples, valid_samples, num_epochs=10, batch_size=1
 
             # target_tensor = torch.tensor([s[2] for s in train_samples[:len(seq_batch)]], device=device)
             target_tensor = target_batch.to(device)
+            # print("222 Target Tensor", target_tensor.shape)
+            # print("333 Pred Scores", pred_scores.shape)
             L_pred = F.cross_entropy(pred_scores, target_tensor)
             L_total = model.cl_weight * L_CL + L_pred
             # time5 = time()
@@ -135,7 +138,8 @@ if __name__ == "__main__":
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using device: {device}")
 
-    campus_list = ['13', '18', '38', '107', '151']
+    # campus_list = ['13', '18', '38', '107', '151']
+    campus_list = ['13']
     for campus_id in campus_list:
 
         print(f"Campus Zone ID: {campus_id}")
@@ -153,7 +157,7 @@ if __name__ == "__main__":
 
         model = MultiViewRecommender(num_items=num_items, embed_dim=32, seq_hidden_dim=32, device=device)
 
-        model = train_model(model, train_samples, valid_samples, num_epochs=100, batch_size=8192, lr=1e-3, device=device, early_stop_patience=5)
+        model = train_model(model, train_samples, valid_samples, num_epochs=100, batch_size=2048, lr=1e-3, device=device, early_stop_patience=5)
 
         test_metrics = evaluate_model(model, test_samples, k_list=[5,10,20], device=device)
         print("=== Test Set Metrics ===")

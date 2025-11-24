@@ -1,60 +1,121 @@
 import torch
 import torch.nn as nn
-from collections import defaultdict
+
+class PointWiseFeedForward(torch.nn.Module):
+    def __init__(self, hidden_units, dropout_rate, activation='relu'):
+        super(PointWiseFeedForward, self).__init__()
+        act = torch.nn.ReLU() if activation=='relu' else torch.nn.GELU()
+        self.pwff = nn.Sequential(
+            nn.Linear(hidden_units, hidden_units),
+            act,
+            nn.Linear(hidden_units, hidden_units),
+            nn.Dropout(p=dropout_rate)
+        )
+    def forward(self, x):
+        out = self.pwff(x)
+        out += x
+        return out
+
 
 class SequenceEncoder(nn.Module):
     """
-    基于序列的 item embedding（完全独立于 graph）
-    - LSTM 输入为独立 Xavier 初始化的 item embedding
-    - 输出每个 item 的序列感知 embedding (seq_embed)
-    - 未出现的 item embedding 保持不变
+    SASRec 风格 sequence encoder
+    - 返回所有 item embedding (num_items, D)
+    - 可选对比学习扰动
     """
-    def __init__(self, num_items, embed_dim=64, hidden_dim=64, num_layers=1, device='cuda'):
+    def __init__(self, num_items, embed_dim=64, max_len=50,
+                 block_num=2, head_num=2, drop_rate=0.1, eps=0.1, device='cuda'):
         super().__init__()
+        self.device = device
         self.num_items = num_items
         self.embed_dim = embed_dim
-        self.hidden_dim = hidden_dim
-        self.device = device
+        self.max_len = max_len
+        self.block_num = block_num
+        self.head_num = head_num
+        self.drop_rate = drop_rate
+        self.eps = eps
 
-        # 独立的 item embedding
-        self.item_embeddings = nn.Embedding(num_items, embed_dim).to(device)
-        nn.init.xavier_uniform_(self.item_embeddings.weight)
+        initializer = nn.init.xavier_uniform_
+        self.item_emb = nn.Parameter(initializer(torch.empty(self.num_items+1, self.embed_dim)))
+        self.pos_emb = nn.Parameter(initializer(torch.empty(self.max_len+1, self.embed_dim)))
+        self.attention_layer_norms = torch.nn.ModuleList()
+        self.attention_layers = torch.nn.ModuleList()
+        self.forward_layer_norms = torch.nn.ModuleList()
+        self.forward_layers = torch.nn.ModuleList()
+        self.emb_dropout = torch.nn.Dropout(self.drop_rate)
+        self.last_layer_norm = torch.nn.LayerNorm(self.embed_dim, eps=1e-8)
 
-        # LSTM 序列编码
-        self.lstm = nn.LSTM(
-            input_size=embed_dim,
-            hidden_size=hidden_dim,
-            num_layers=num_layers,
-            batch_first=True
-        ).to(device)
+        for n in range(self.block_num):
+            self.attention_layer_norms.append(torch.nn.LayerNorm(self.embed_dim, eps=1e-8))
+            new_attn_layer =  torch.nn.MultiheadAttention(self.embed_dim, self.head_num, self.drop_rate)
+            self.attention_layers.append(new_attn_layer)
+            self.forward_layer_norms.append(torch.nn.LayerNorm(self.embed_dim, eps=1e-8))
+            new_fwd_layer = PointWiseFeedForward(self.embed_dim, self.drop_rate)
+            self.forward_layers.append(new_fwd_layer)
 
-    def forward(self, user_sequences, prev_seq_embed=None):
+    def forward(self, seqs, perturbed=False):
         """
-        user_sequences: list[list]，每个序列是 item_id 列表
-        prev_seq_embed: [num_items, hidden_dim] tensor，上一轮 seq_embed（可选）
+        seqs: List[List[int]]，batch 序列（每条序列长度不同）
+        返回:
+            item_embeddings (num_items, D)
+            (可选) item_embeddings_perturbed (num_items, D)
         """
-        if prev_seq_embed is None:
-            # 初始化 seq_embed 为零
-            seq_embed = torch.zeros(self.num_items, self.hidden_dim, device=self.device)
-        else:
-            # 保留上一轮 seq_embed
-            seq_embed = prev_seq_embed.clone()
+        # 1. 处理输入 seqs，确保每条序列的长度都为 self.max_len
+        batch_size = len(seqs)
+        max_len = self.max_len  # 获取统一的序列长度
+        device = self.device
 
-        # 暂存每个 item 的 hidden embedding
-        hidden_embed_dict = defaultdict(list)
+        # 填充或裁剪每条序列
+        padded_seqs = []
+        seq_lens = []  # 用于保存每条序列的有效长度
+        for seq in seqs:
+            seq_len = len(seq)
+            seq_lens.append(seq_len)
+            
+            if seq_len > max_len:  # 如果序列太长，裁剪前面部分
+                padded_seq = seq[-max_len:]  # 保留后 max_len 个元素
+            else:  # 如果序列太短，填充到 max_len 长度
+                padded_seq = seq + [self.num_items] * (max_len - seq_len)  # 用 self.num_items 填充
 
-        for seq in user_sequences:
-            seq = torch.tensor(seq, device=self.device)
-            hidden_input = self.item_embeddings(seq).unsqueeze(0)  # [1, seq_len, embed_dim]
+            padded_seqs.append(padded_seq)
 
-            hidden_output, _ = self.lstm(hidden_input)  # [1, seq_len, hidden_dim]
-            hidden_output = hidden_output.squeeze(0)    # [seq_len, hidden_dim]
+        seqs = torch.tensor(padded_seqs, dtype=torch.long, device=device)  # (batch_size, max_len)
 
-            for item_id, hidden_embed in zip(seq, hidden_output):
-                hidden_embed_dict[int(item_id)].append(hidden_embed)
+        # 2. 获取 item embedding + position embedding
+        seq_emb = self.item_emb[seqs]  # (B, L, D)
+        seq_emb *= self.embed_dim ** 0.5
+        pos_ids = torch.arange(max_len, device=device).unsqueeze(0).expand(batch_size, -1)
+        pos_emb = self.pos_emb[pos_ids]
+        seq_emb = seq_emb + pos_emb
+        seq_emb = self.emb_dropout(seq_emb)
 
-        # 聚合 hidden_embed 得到 seq_embed（只更新出现过的 item）
-        for item_id, hidden_list in hidden_embed_dict.items():
-            seq_embed[item_id] = torch.stack(hidden_list).mean(dim=0)
+        # 3. 构建 padding mask
+        pad_mask = (seqs == self.num_items)  # 填充部分为 self.num_items
+        seq_emb = seq_emb * (~pad_mask).unsqueeze(-1)  # 将 padding 置零
 
-        return seq_embed
+        # 4. 构建注意力 mask (防止未来信息泄漏)
+        attn_mask = ~torch.tril(torch.ones((max_len, max_len), dtype=torch.bool, device=device))  # (L, L)
+
+        # 5. 经过多层 Self-Attention + FeedForward
+        for i in range(self.block_num):
+            # MultiheadAttention 需要 (L, B, D)
+            seq_emb_T = seq_emb.transpose(0, 1)  # (L, B, D)
+            norm_emb = self.attention_layer_norms[i](seq_emb_T)
+            attn_out, _ = self.attention_layers[i](norm_emb, seq_emb_T, seq_emb_T, attn_mask=attn_mask)
+            seq_emb_T = norm_emb + attn_out
+            seq_emb_T = seq_emb_T.transpose(0, 1)  # (B, L, D)
+            seq_emb_T = self.forward_layer_norms[i](seq_emb_T)
+            seq_emb_T = self.forward_layers[i](seq_emb_T)
+            seq_emb_T = seq_emb_T * (~pad_mask).unsqueeze(-1)
+            seq_emb = seq_emb_T
+
+        seq_emb = self.last_layer_norm(seq_emb)
+
+        # 6. 可选扰动 (用于对比学习)
+        if perturbed:
+            noise = torch.randn_like(seq_emb) * self.eps
+            seq_emb_perturbed = seq_emb + noise
+            return seq_emb, seq_emb_perturbed
+
+        return seq_emb # 维度是[batch_size, seq_len, embed_dim]
+        

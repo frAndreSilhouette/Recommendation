@@ -1,62 +1,69 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 class GraphConvolutionalEncoder(nn.Module):
     """
-    简化版 GCN encoder (LightGCN-style) 用于 item
-    输入：稀疏邻接矩阵 (item_graph.pt)
-    输出：经过 L 层传播后的 item embedding
+    XSimGCL-style LightGCN encoder for users and items
+    - L layers propagation on user-item bipartite graph
+    - Optional perturbation for contrastive learning
+    输入：
+        num_users: 用户数量
+        num_items: 物品数量
+        embed_dim: embedding 维度
+        num_layers: GCN 层数
+        eps: 对比学习扰动幅度
+        layer_cl: 对比学习使用的层
+    输出：
+        user_embeddings, item_embeddings
+        (可选) user_embeddings_cl, item_embeddings_cl
     """
-    def __init__(self, num_items, embed_dim=64, num_layers=2, device='cuda'):
+    def __init__(self, num_users, num_items, embed_dim=64, num_layers=2, eps=0.1, layer_cl=1, device='cuda'):
         super().__init__()
         self.device = device
-
-        # 自动获取节点数量
+        self.num_users = num_users
         self.num_items = num_items
         self.embed_dim = embed_dim
         self.num_layers = num_layers
+        self.eps = eps
+        self.layer_cl = layer_cl
 
-        # 初始化 item embedding
-        self.embedding = nn.Embedding(self.num_items, embed_dim).to(device)
-        nn.init.xavier_uniform_(self.embedding.weight)  # Xavier 初始化
+        # 初始化 user 和 item embedding
+        self.user_embedding = nn.Embedding(num_users, embed_dim).to(device)
+        self.item_embedding = nn.Embedding(num_items, embed_dim).to(device)
+        nn.init.xavier_uniform_(self.user_embedding.weight)
+        nn.init.xavier_uniform_(self.item_embedding.weight)
 
-    def forward(self, adj_matrix):
+    def forward(self, adj_matrix, perturbed=True):
         """
-        L 层传播
+        adj_matrix: 稀疏用户-物品邻接矩阵 [num_users+num_items, num_users+num_items]
+        perturbed: 是否添加对比学习扰动
+        返回：
+            user_embeddings, item_embeddings
+            (可选) user_embeddings_cl, item_embeddings_cl
         """
-
         adj = adj_matrix.to(self.device)
 
-        # 保存每层 embedding，用于最终平均
-        all_embeddings = [self.embedding.weight]
+        # concat user+item embedding
+        e = torch.cat([self.user_embedding.weight, self.item_embedding.weight], dim=0)
+        all_embeddings = []
+        embeddings_cl = e.clone()
 
-        e = self.embedding.weight
         for layer in range(self.num_layers):
-            # 传播公式: e^(l+1) = e^(l) + sum_{neighbors} w(i,i') * e_{i'}^(l)
-            e = e + torch.sparse.mm(adj, e)
+            e = torch.sparse.mm(adj, e)
+            # perturbation 用于 CL
+            if perturbed and layer == self.layer_cl:
+                noise = torch.rand_like(e).to(self.device)
+                embeddings_cl = e + torch.sign(e) * F.normalize(noise, dim=-1) * self.eps
             all_embeddings.append(e)
 
-        # 最终 embedding: 对所有层的 embedding 求平均
+        # 最终 embedding: 平均所有层
         final_embedding = torch.stack(all_embeddings, dim=0).mean(dim=0)
-        return final_embedding
 
+        # 拆分 user 和 item embedding
+        user_emb, item_emb = torch.split(final_embedding, [self.num_users, self.num_items], dim=0)
 
-if __name__ == "__main__":
-    device = 'cuda'
-
-    # 1. 读取稀疏邻接矩阵，并放到 GPU
-    adj = torch.load('./log/item_graph.pt').to(device)  # 强制放到 cuda
-
-    # 2. 构建 GCN encoder
-    gcn_encoder = GraphConvolutionalEncoder(adj_matrix=adj.shape[0], embed_dim=64, num_layers=2, device=device)
-    gcn_encoder.to(device)  # embedding 也放到 cuda
-
-    # 3. 前向传播，得到 item embedding
-    item_embeddings = gcn_encoder()  # shape: [num_items, embed_dim]
-
-    # 4. 保存到 cpu
-    torch.save(item_embeddings.cpu(), "./log/item_graph_embeddings.pt")
-
-    print("Item embeddings shape:", item_embeddings.shape)
-    print("Example embedding for item 0:", item_embeddings[0])
-
+        if perturbed:
+            user_emb_cl, item_emb_cl = torch.split(embeddings_cl, [self.num_users, self.num_items], dim=0)
+            return user_emb, item_emb, user_emb_cl, item_emb_cl
+        return user_emb, item_emb
