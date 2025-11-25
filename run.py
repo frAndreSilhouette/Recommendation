@@ -36,17 +36,20 @@ def train_model(model, train_samples, valid_samples, num_epochs=10, batch_size=1
     train_users = [s[0] for s in train_samples]
     train_seqs = [s[1] for s in train_samples]
     train_targets = torch.tensor([s[2] for s in train_samples], device=device)
+    print("Train samples:", len(train_samples))
 
     # 提取验证集输入
     valid_users = [s[0] for s in valid_samples]
     valid_seqs = [s[1] for s in valid_samples]
     valid_targets = torch.tensor([s[2] for s in valid_samples], device=device)
+    print("Valid samples:", len(valid_samples))
 
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0.0
         total_CL_loss = 0.0  # 总对比损失
         total_pred_loss = 0.0  # 总预测损失
+        total_l2_reg_loss = 0.0 # L2 正则化损失
         for seq_batch, user_batch, target_batch in tqdm(
             train_loader, 
             desc=f"Epoch {epoch+1}/{num_epochs} Training"
@@ -57,39 +60,52 @@ def train_model(model, train_samples, valid_samples, num_epochs=10, batch_size=1
             user = list(user_batch)
 
             # 两个随机增强序列
-            seq_aug1, seq_aug2 = [], []
-            for seq in seq_batch:
-                seq1 = disturb_sequence(seq, max_item_id=model.num_items-1)
-                seq2 = disturb_sequence(seq, max_item_id=model.num_items-1)
-                seq_aug1.append(seq1)
-                seq_aug2.append(seq2)
+            # seq_aug1, seq_aug2 = [], []
+            # for seq in seq_batch:
+            #     seq1 = disturb_sequence(seq, max_item_id=model.num_items-1)
+            #     seq2 = disturb_sequence(seq, max_item_id=model.num_items-1)
+            #     seq_aug1.append(seq1)
+            #     seq_aug2.append(seq2)
 
             optimizer.zero_grad()
-            user_emb, item_emb, CL_loss = model(seq_batch, user, seq_aug1, seq_aug2)
+            # user_emb, item_emb, CL_loss = model(seq_batch, user, seq_aug1, seq_aug2)
+            user_emb, item_emb, CL_loss = model(seq_batch, user) # 这里的CL_loss已经乘了model.CL_loss_weight
 
             pred_scores = model.predict(user_emb, item_emb)
 
+            # print("pred_scores grad:", pred_scores.requires_grad)
+            # print("user_emb grad:", user_emb.requires_grad)
+            # print("item_emb grad:", item_emb.requires_grad)
+            # print("pred_scores min/max:", pred_scores.min().item(), pred_scores.max().item())
+            # print('graph encoder grad:', model.gcn_encoder.user_embedding.weight.requires_grad, model.gcn_encoder.item_embedding.weight.requires_grad)
+            # print('sequence encoder grad:', model.seq_encoder.item_emb.requires_grad)
+
             target_tensor = target_batch.to(device)
             pred_loss = F.cross_entropy(pred_scores, target_tensor)
+            l2_reg_loss = model.l2_reg_loss_weight * (
+                torch.sum(user_emb**2)/user_emb.shape[0] + torch.sum(item_emb**2)/item_emb.shape[0]
+            )
 
-            loss = model.CL_loss_weight * CL_loss + pred_loss
+            loss = CL_loss + pred_loss + l2_reg_loss
             loss.backward()
             optimizer.step()
 
             total_loss += loss.item()
             total_CL_loss += CL_loss.item()
             total_pred_loss += pred_loss.item()
+            total_l2_reg_loss += l2_reg_loss.item()
 
         avg_loss = total_loss / len(train_loader)
         avg_CL_loss = total_CL_loss / len(train_loader)
         avg_pred_loss = total_pred_loss / len(train_loader)
+        avg_l2_reg_loss = total_l2_reg_loss / len(train_loader)
 
-        print(f"Epoch {epoch+1}/{num_epochs} - Train CL loss={avg_CL_loss:.4f}, prediction loss={avg_pred_loss:.4f}, total Loss={avg_loss:.4f}")
+        print(f"Epoch {epoch+1}/{num_epochs} - Train CL loss={avg_CL_loss:.4f}, prediction loss={avg_pred_loss:.4f}, l2 reg loss={avg_l2_reg_loss:.4f}, total Loss={avg_loss:.4f}")
 
         # ---------- 验证集评估 ----------
         model.eval()
         with torch.no_grad():
-            user_emb, item_emb, _ = model(valid_seqs, valid_users, valid_seqs, valid_seqs)
+            user_emb, item_emb, _ = model(valid_seqs, valid_users)
             valid_scores = model.predict(user_emb, item_emb)
             metrics = hit_ndcg(valid_scores, valid_targets, k_list=[10])
             valid_hr10 = metrics['HR@10']
@@ -111,7 +127,17 @@ def train_model(model, train_samples, valid_samples, num_epochs=10, batch_size=1
 
     # 加载最佳模型
     model.load_state_dict(torch.load("./log/best_model.pt"))
-    return model
+    return 
+    
+def save_samples_to_txt(samples, path):
+    """
+    samples: list of (user_id, seq_list, target)
+    path: 输出文件路径
+    """
+    with open(path, "w") as f:
+        for user, seq, target in samples:
+            seq_str = ",".join(map(str, seq))  # 序列转成 item1,item2,item3
+            f.write(f"{user} {seq_str} {target}\n")
 
 
 # ---------------- Main ----------------
@@ -119,8 +145,8 @@ if __name__ == "__main__":
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using device: {device}")
 
-    # campus_list = ['13', '18', '38', '107', '151']
-    campus_list = ['13']
+    campus_list = ['13', '18', '38', '107', '151']
+    # campus_list = ['13']
     for campus_id in campus_list:
 
         print(f"Campus Zone ID: {campus_id}")
@@ -129,22 +155,37 @@ if __name__ == "__main__":
         user_seqs = build_sequences(df)
         max_item_id = max(item2newid.values())
         train_samples, valid_samples, test_samples = generate_sequence(user_seqs, disturb=None, max_item_id=max_item_id)
+        
+        os.makedirs("./dataset", exist_ok=True)
+        save_samples_to_txt(train_samples, f"./dataset/campus{campus_id}_train.txt")
+        save_samples_to_txt(valid_samples, f"./dataset/campus{campus_id}_valid.txt")
+        save_samples_to_txt(test_samples, f"./dataset/campus{campus_id}_test.txt")
+        print("Data Files saved: train.txt / valid.txt / test.txt")
+        # num_items = max(
+        #     max(s[2] for s in train_samples),
+        #     max(s[2] for s in valid_samples),
+        #     max(s[2] for s in test_samples)
+        # ) + 1
 
-        num_items = max(
-            max(s[2] for s in train_samples),
-            max(s[2] for s in valid_samples),
-            max(s[2] for s in test_samples)
-        ) + 1
+        # num_users = max(
+        #     max(s[0] for s in train_samples),
+        #     max(s[0] for s in valid_samples),
+        #     max(s[0] for s in test_samples)
+        # ) + 1
 
-        num_users = max(
-            max(s[0] for s in train_samples),
-            max(s[0] for s in valid_samples),
-            max(s[0] for s in test_samples)
-        ) + 1
+        all_item_ids = set()
+        for s in train_samples + valid_samples + test_samples:
+            all_item_ids.update(s[1])  # seq
+            all_item_ids.add(s[2])     # target
+        num_items = max(all_item_ids) + 1
+        num_users = max(s[0] for s in train_samples + valid_samples + test_samples) + 1
 
-        model = MultiViewRecommender(num_users=num_users, num_items=num_items, embed_dim=64, device=device)
 
-        model = train_model(model, train_samples, valid_samples, num_epochs=200, batch_size=1024, lr=1e-3, device=device, early_stop_patience=200)
+        model = MultiViewRecommender(num_users=num_users, num_items=num_items, embed_dim=64, device=device,
+                                    has_graph_encoder=False, has_sequence_encoder=True)
+
+        model = train_model(model, train_samples, valid_samples, 
+                            num_epochs=200, batch_size=4096, lr=1e-3, device=device, early_stop_patience=10)
 
         test_metrics = evaluate_model(model, test_samples, k_list=[5,10,20], device=device)
         print("=== Test Set Metrics ===")

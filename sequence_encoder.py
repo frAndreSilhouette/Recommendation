@@ -23,7 +23,7 @@ class SequenceEncoder(nn.Module):
     - 返回所有 item embedding (num_items, D)
     - 可选对比学习扰动
     """
-    def __init__(self, num_items, embed_dim=64, max_len=15,
+    def __init__(self, num_items, embed_dim=64, max_len=50,
                  block_num=2, head_num=1, drop_rate=0.2, eps=0.1, device='cuda'):
         super().__init__()
         self.device = device
@@ -110,6 +110,8 @@ class SequenceEncoder(nn.Module):
             seq_emb = seq_emb_T
 
         seq_emb = self.last_layer_norm(seq_emb)
+
+        # print("DEBUG sequenceitem embedding", self.item_emb[0])
 
         # 6. 可选扰动 (用于对比学习)
         if perturbed:

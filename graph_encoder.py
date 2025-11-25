@@ -34,7 +34,7 @@ class GraphConvolutionalEncoder(nn.Module):
         nn.init.xavier_uniform_(self.user_embedding.weight)
         nn.init.xavier_uniform_(self.item_embedding.weight)
 
-    def forward(self, adj_matrix, perturbed=True):
+    def forward(self, adj_matrix, perturbed=False):
         """
         adj_matrix: 稀疏用户-物品邻接矩阵 [num_users+num_items, num_users+num_items]
         perturbed: 是否添加对比学习扰动
@@ -52,16 +52,20 @@ class GraphConvolutionalEncoder(nn.Module):
         for layer in range(self.num_layers):
             e = torch.sparse.mm(adj, e)
             # perturbation 用于 CL
-            if perturbed and layer == self.layer_cl:
+            if perturbed:
                 noise = torch.rand_like(e).to(self.device)
-                embeddings_cl = e + torch.sign(e) * F.normalize(noise, dim=-1) * self.eps
+                e = e + torch.sign(e) * F.normalize(noise, dim=-1) * self.eps
             all_embeddings.append(e)
+            if layer == self.layer_cl-1:
+                embeddings_cl = e
 
         # 最终 embedding: 平均所有层
         final_embedding = torch.stack(all_embeddings, dim=0).mean(dim=0)
 
         # 拆分 user 和 item embedding
         user_emb, item_emb = torch.split(final_embedding, [self.num_users, self.num_items], dim=0)
+
+        # print("DEBUG graph item embedding", item_emb[0])
 
         if perturbed:
             user_emb_cl, item_emb_cl = torch.split(embeddings_cl, [self.num_users, self.num_items], dim=0)

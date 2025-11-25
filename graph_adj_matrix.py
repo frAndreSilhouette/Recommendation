@@ -1,5 +1,7 @@
 import torch
 from collections import defaultdict
+import numpy as np
+import scipy.sparse as sp
 
 def load_sequences_from_file(path):
     """
@@ -54,28 +56,61 @@ def extract_last_sequences(user2seqs):
     return last_seqs
 
 
-def compute_user_item_graph(seqs_with_user, n_users, n_items):
+def compute_user_item_graph_scipy(seqs_with_user, n_users, n_items):
     """
-    构造用户-商品 bipartite 邻接矩阵（稀疏）
-    seqs_with_user: list of (user_id, seq)
-    n_users: 用户总数
-    n_items: 商品总数
-    输出：
-        sparse adjacency matrix [n_users+n_items, n_users+n_items]
+    使用 scipy 构造用户-物品 bipartite 邻接矩阵
+    返回 scipy CSR 矩阵
     """
-    edges = set()
+    row_idx = []
+    col_idx = []
+    data = []
 
     for user, seq in seqs_with_user:
-        # 用户-序列商品连边（双向）
         for item in seq:
-            edges.add((user, n_users + item))      # user -> item
-            edges.add((n_users + item, user))      # item -> user
+            # user -> item
+            row_idx.append(user)
+            col_idx.append(n_users + item)
+            data.append(1.0)
+            # item -> user
+            row_idx.append(n_users + item)
+            col_idx.append(user)
+            data.append(1.0)
 
-    rows, cols = zip(*edges)
-    indices = torch.tensor([rows, cols], dtype=torch.long)
-    values = torch.ones(len(rows), dtype=torch.float32)
-    adj = torch.sparse_coo_tensor(indices, values, size=(n_users + n_items, n_users + n_items))
-    return adj
+    adj = sp.coo_matrix((data, (row_idx, col_idx)), shape=(n_users + n_items, n_users + n_items))
+    return adj.tocsr()
+
+
+def normalize_adj_scipy(adj):
+    """
+    使用 scipy 对稀疏矩阵归一化
+    对方阵 A: D^{-1/2} A D^{-1/2}
+    """
+    adj = adj.tocoo()
+    rowsum = np.array(adj.sum(1)).flatten()
+
+    d_inv_sqrt = np.power(rowsum, -0.5)
+    d_inv_sqrt[np.isinf(d_inv_sqrt)] = 0.0
+    d_mat_inv_sqrt = sp.diags(d_inv_sqrt)
+
+    norm_adj = d_mat_inv_sqrt.dot(adj).dot(d_mat_inv_sqrt)
+    return norm_adj.tocsr()
+
+
+def scipy_to_torch_sparse(adj):
+    """
+    将 scipy csr/coo 转换为 torch.sparse_coo_tensor
+    """
+    adj = adj.tocoo()
+
+    # indices = torch.tensor([adj.row, adj.col], dtype=torch.long)
+    rows = np.array(adj.row)
+    cols = np.array(adj.col)
+    indices = torch.tensor(np.vstack([rows, cols]), dtype=torch.long)
+
+    values = torch.tensor(adj.data, dtype=torch.float32)
+    shape = adj.shape
+    return torch.sparse_coo_tensor(indices, values, size=shape).coalesce()
+
 
 def build_user_item_graph(train_samples, n_users, n_items):
     """
@@ -87,5 +122,7 @@ def build_user_item_graph(train_samples, n_users, n_items):
         user2seqs[user].append(seq)
 
     final_seqs = extract_last_sequences(user2seqs)  # list of (user_id, seq)
-    adj = compute_user_item_graph(final_seqs, n_users, n_items)
+    adj = compute_user_item_graph_scipy(final_seqs, n_users, n_items)
+    # adj = normalize_adj_scipy(adj)
+    adj = scipy_to_torch_sparse(adj)
     return adj

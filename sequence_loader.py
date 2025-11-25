@@ -126,17 +126,15 @@ def generate_sequence(user_seqs, disturb=None, max_item_id=None):
             continue
 
         # ---------- 训练集 ----------
-        # for i in range(1, len(seq) - 2):
-        #     input_seq = seq[:i]
-        #     target = seq[i]
-        #     if disturb is not None and max_item_id is not None:
-        #         input_seq = disturb_sequence(input_seq, max_item_id, seed=disturb)
-        #     train_sequences.append((u, input_seq, target))
+        for i in range(1, len(seq) - 2):
+            input_seq = seq[:i]
+            target = seq[i]
+            train_sequences.append((u, input_seq, target))
 
-        # 新的训练集方案：为每个用户只生成一条
-        train_input = seq[:-3]
-        train_target = seq[-3]
-        train_sequences.append((u, train_input, train_target))
+        # # 新的训练集方案：为每个用户只生成一条
+        # train_input = seq[:-3]
+        # train_target = seq[-3]
+        # train_sequences.append((u, train_input, train_target))
 
         # ---------- 验证集 ----------
         valid_input = seq[:-2]

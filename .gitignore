@@ -1,3 +1,4 @@
 *.feather
 *.pt
-./dataset/*
+dataset/
+*.pyc

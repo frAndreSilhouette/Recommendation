@@ -36,7 +36,7 @@ def evaluate_model(model, test_samples, k_list=[5,10,20], device='cuda'):
     test_targets = torch.tensor([s[2] for s in test_samples], device=device)
     model.eval()
     with torch.no_grad():
-        user_emb, item_emb, _ = model(test_seqs, test_users, test_seqs, test_seqs)
+        user_emb, item_emb, _ = model(test_seqs, test_users)
         scores = model.predict(user_emb, item_emb)
         metrics = hit_ndcg(scores, test_targets, k_list=k_list)
     return metrics
