@@ -18,7 +18,7 @@ from dataset import SequenceDataset, collate_fn
 from model import MultiViewRecommender
 
 # ---------------- 训练函数 ----------------
-def train_model(model, train_samples, valid_samples, num_epochs=10, batch_size=1024, lr=1e-3, device='cuda', early_stop_patience=5):
+def train_model(model, train_samples, valid_samples, num_users, num_items, num_epochs=10, batch_size=1024, lr=1e-3, device='cuda', early_stop_patience=5):
     """
     训练多视图推荐模型
     1. 每个 epoch 训练完成后，计算验证集 HR@10 和 NDCG@10
@@ -37,6 +37,9 @@ def train_model(model, train_samples, valid_samples, num_epochs=10, batch_size=1
     train_seqs = [s[1] for s in train_samples]
     train_targets = torch.tensor([s[2] for s in train_samples], device=device)
     print("Train samples:", len(train_samples))
+
+    model.adj = build_user_item_graph(list(zip(train_users, train_seqs, train_targets)), num_users, num_items) # 一次性根据所有训练数据构建图
+    print("Graph built.")
 
     # 提取验证集输入
     valid_users = [s[0] for s in valid_samples]
@@ -182,9 +185,9 @@ if __name__ == "__main__":
 
 
         model = MultiViewRecommender(num_users=num_users, num_items=num_items, embed_dim=64, device=device,
-                                    has_graph_encoder=False, has_sequence_encoder=True)
+                                    has_graph_encoder=True, has_sequence_encoder=True)
 
-        model = train_model(model, train_samples, valid_samples, 
+        model = train_model(model, train_samples, valid_samples, num_users=num_users, num_items=num_items,
                             num_epochs=200, batch_size=4096, lr=1e-3, device=device, early_stop_patience=10)
 
         test_metrics = evaluate_model(model, test_samples, k_list=[5,10,20], device=device)

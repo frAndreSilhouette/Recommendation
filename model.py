@@ -53,6 +53,7 @@ class MultiViewRecommender(nn.Module):
             raise ValueError("At least one of graph_encoder or sequence_encoder must be True")
 
         # Graph encoder
+        self.adj = None
         if self.has_graph_encoder:
             print(">>> Initializing Graph encoder")
             self.gcn_encoder = GraphConvolutionalEncoder(num_users=self.num_users,
@@ -76,20 +77,43 @@ class MultiViewRecommender(nn.Module):
         self.to(device)
 
     # ---------------- InfoNCE 对比学习 ----------------
-    @staticmethod
-    def info_nce_loss(e1, e2, temperature=1):
-        num_elements = e1.size(0) # 不局限于item，也可以是user，也可以是sequence
+    # @staticmethod
+    # def info_nce_loss(e1, e2, temperature=1.0):
+    #     num_elements = e1.size(0) # 不局限于item，也可以是user，也可以是sequence
 
-        losses = []
-        for i in range(num_elements):
-            pos_sim = F.cosine_similarity(e1[i:i+1], e2[i:i+1])
-            neg_idx = random.randint(0, num_elements - 1)
-            while neg_idx == i:
-                neg_idx = random.randint(0, num_elements - 1)
-            neg_sim = F.cosine_similarity(e1[i:i+1], e2[neg_idx:neg_idx+1])
-            loss = -torch.log(torch.exp(pos_sim/temperature) / (torch.exp(pos_sim/temperature) + torch.exp(neg_sim/temperature)))
-            losses.append(loss)
-        return torch.stack(losses).mean()
+    #     losses = []
+    #     for i in range(num_elements):
+    #         pos_sim = F.cosine_similarity(e1[i:i+1], e2[i:i+1])
+    #         neg_idx = random.randint(0, num_elements - 1)
+    #         while neg_idx == i:
+    #             neg_idx = random.randint(0, num_elements - 1)
+    #         neg_sim = F.cosine_similarity(e1[i:i+1], e2[neg_idx:neg_idx+1])
+    #         loss = -torch.log(torch.exp(pos_sim/temperature) / (torch.exp(pos_sim/temperature) + torch.exp(neg_sim/temperature)))
+    #         losses.append(loss)
+    #     return torch.stack(losses).mean()
+
+    @staticmethod
+    def info_nce_loss(e1, e2, temperature=0.2):
+        """
+        e1, e2: [N, D]
+        """
+        N = e1.size(0)
+
+        # 正样本相似度
+        pos_sim = F.cosine_similarity(e1, e2, dim=1)  # [N]
+
+        # 生成负样本索引（确保不等于自身）
+        neg_idx = torch.randint(0, N-1, (N,), device=e1.device)
+        neg_idx = neg_idx + (neg_idx >= torch.arange(N, device=e1.device)).long()  # 避免等于自身
+
+        neg_sim = F.cosine_similarity(e1, e2[neg_idx], dim=1)  # [N]
+
+        # 计算 InfoNCE
+        logits = torch.stack([pos_sim, neg_sim], dim=1) / temperature  # [N, 2]
+        labels = torch.zeros(N, dtype=torch.long, device=e1.device)  # 正样本为第0列
+        loss = F.cross_entropy(logits, labels)
+
+        return loss
 
     # ---------------- Forward ----------------
     def forward(self, seq, user, seq_aug1=None, seq_aug2=None):
@@ -107,9 +131,8 @@ class MultiViewRecommender(nn.Module):
         if seq_aug1 is None or seq_aug2 is None:
             seq_lengths = [len(s) for s in seq]
             # ---------------- Graph Embedding ----------------
-            if self.has_graph_encoder:
-                adj = build_user_item_graph(list(zip(user, seq, [None] * len(user))), self.num_users, self.num_items) # 后面那个None没有实际意义，只是为了占位
-                graph_user_emb, graph_item_emb, graph_user_emb_cl, graph_item_emb_cl = self.gcn_encoder(adj, perturbed=True)
+            if self.has_graph_encoder:                
+                graph_user_emb, graph_item_emb, graph_user_emb_cl, graph_item_emb_cl = self.gcn_encoder(self.adj, perturbed=True)
 
             # ---------------- Sequence Embedding ----------------
             if self.has_sequence_encoder:
@@ -127,6 +150,8 @@ class MultiViewRecommender(nn.Module):
                 CL_loss_graph_user = self.info_nce_loss(graph_user_emb, graph_user_emb_cl)
                 CL_loss_graph_item = self.info_nce_loss(graph_item_emb, graph_item_emb_cl)
                 CL_loss_graph = CL_loss_graph_user + CL_loss_graph_item
+                # time4 = time.time()
+                # print(f"InfoNCE用时 {time4-time3:.2f}s")
             else:
                 CL_loss_graph = 0
 
