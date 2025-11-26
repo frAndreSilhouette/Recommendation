@@ -38,7 +38,7 @@ def train_model(model, train_samples, valid_samples, num_users, num_items, num_e
     train_targets = torch.tensor([s[2] for s in train_samples], device=device)
     print("Train samples:", len(train_samples))
 
-    model.adj = build_user_item_graph(list(zip(train_users, train_seqs, train_targets)), num_users, num_items) # 一次性根据所有训练数据构建图
+    model.adj = build_user_item_graph(list(zip(train_users, train_seqs, train_targets)), num_users, num_items, weight=True) # 一次性根据所有训练数据构建图
     print("Graph built.")
 
     # 提取验证集输入
@@ -130,7 +130,7 @@ def train_model(model, train_samples, valid_samples, num_users, num_items, num_e
 
     # 加载最佳模型
     model.load_state_dict(torch.load("./log/best_model.pt"))
-    return 
+    return model
     
 def save_samples_to_txt(samples, path):
     """
@@ -164,17 +164,6 @@ if __name__ == "__main__":
         save_samples_to_txt(valid_samples, f"./dataset/campus{campus_id}_valid.txt")
         save_samples_to_txt(test_samples, f"./dataset/campus{campus_id}_test.txt")
         print("Data Files saved: train.txt / valid.txt / test.txt")
-        # num_items = max(
-        #     max(s[2] for s in train_samples),
-        #     max(s[2] for s in valid_samples),
-        #     max(s[2] for s in test_samples)
-        # ) + 1
-
-        # num_users = max(
-        #     max(s[0] for s in train_samples),
-        #     max(s[0] for s in valid_samples),
-        #     max(s[0] for s in test_samples)
-        # ) + 1
 
         all_item_ids = set()
         for s in train_samples + valid_samples + test_samples:
@@ -183,12 +172,11 @@ if __name__ == "__main__":
         num_items = max(all_item_ids) + 1
         num_users = max(s[0] for s in train_samples + valid_samples + test_samples) + 1
 
-
         model = MultiViewRecommender(num_users=num_users, num_items=num_items, embed_dim=64, device=device,
                                     has_graph_encoder=True, has_sequence_encoder=True)
 
         model = train_model(model, train_samples, valid_samples, num_users=num_users, num_items=num_items,
-                            num_epochs=200, batch_size=4096, lr=1e-3, device=device, early_stop_patience=10)
+                            num_epochs=500, batch_size=4096, lr=1e-3, device=device, early_stop_patience=10)
 
         test_metrics = evaluate_model(model, test_samples, k_list=[5,10,20], device=device)
         print("=== Test Set Metrics ===")

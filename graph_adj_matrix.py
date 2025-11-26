@@ -27,7 +27,7 @@ def load_sequences_from_file(path):
     return user2seqs, user_set, item_set
 
 
-def compute_user_item_graph_scipy(user2seqs, n_users, n_items):
+def compute_user_item_graph(user2seqs, n_users, n_items):
     """
     构造用户-商品二值图（bipartite adjacency matrix）
     每个用户-商品组合只生成一条边，权重为1
@@ -45,10 +45,32 @@ def compute_user_item_graph_scipy(user2seqs, n_users, n_items):
     return adj.tocsr()
 
 
+### 新增：加权版本
+def compute_user_item_graph_weighted(user2itemcount, n_users, n_items):
+    """
+    构造用户-商品图（bipartite adjacency matrix）
+    边的权重为用户对该 item 的出现次数
+    user2itemcount: {user: {item: count}}
+    """
+    row_idx, col_idx, data = [], [], []
+
+    for user, item_count_dict in user2itemcount.items():
+        for item, cnt in item_count_dict.items():
+            # 双向边
+            row_idx.extend([user, n_users + item])
+            col_idx.extend([n_users + item, user])
+            data.extend([cnt, cnt])
+
+    adj = sp.coo_matrix((np.array(data, dtype=np.float32),
+                         (row_idx, col_idx)),
+                        shape=(n_users + n_items, n_users + n_items))
+    return adj.tocsr()
+
+
 def normalize_adj_scipy(adj):
     """稀疏矩阵归一化 D^{-1/2} A D^{-1/2}"""
     rowsum = np.array(adj.sum(1)).flatten()
-    d_inv_sqrt = np.power(rowsum, -0.5, where=rowsum>0)
+    d_inv_sqrt = np.power(rowsum, -0.5, where=rowsum > 0)
     d_inv_sqrt[np.isinf(d_inv_sqrt)] = 0.0
     d_mat_inv_sqrt = sp.diags(d_inv_sqrt)
     return d_mat_inv_sqrt.dot(adj).dot(d_mat_inv_sqrt).tocsr()
@@ -62,15 +84,36 @@ def scipy_to_torch_sparse(adj):
     return torch.sparse_coo_tensor(indices, values, size=adj.shape).coalesce()
 
 
-def build_user_item_graph(train_samples, n_users, n_items):
+def build_user_item_graph(train_samples, n_users, n_items, weight=False):  ### 修改：新增参数 weight=False
     """
-    构建用户-商品图，使用所有历史序列，不提取最长序列
-    train_samples: list of (user_id, seq, target_item)
+    构建用户-商品图
+    weight=False: 使用所有历史序列 + 二值图
+    weight=True : 只取每个用户最长序列 + 边权重为 item 出现次数
     """
     user2seqs = defaultdict(list)
     for user, seq, _ in train_samples:
         user2seqs[user].append(seq)
 
-    adj = compute_user_item_graph_scipy(user2seqs, n_users, n_items)
-    # adj = normalize_adj_scipy(adj)  # 如果需要归一化可以开启
+    ### 新增：加权图逻辑
+    if weight:
+        # 1. 取最长序列
+        user2itemcount = {}
+        for user, seq_list in user2seqs.items():
+            longest_seq = max(seq_list, key=len)  # 最长序列
+            # 统计 item 出现次数
+            item_count = defaultdict(int)
+            for item in longest_seq:
+                item_count[item] += 1
+            user2itemcount[user] = item_count
+
+        # 2. 构建加权图
+        adj = compute_user_item_graph_weighted(user2itemcount, n_users, n_items)
+
+    else:
+        ### 原逻辑保持不变
+        adj = compute_user_item_graph(user2seqs, n_users, n_items)
+
+    # 可选的归一化
+    adj = normalize_adj_scipy(adj)
+
     return scipy_to_torch_sparse(adj)
