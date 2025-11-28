@@ -144,12 +144,11 @@ def save_samples_to_txt(samples, path):
 
 
 # ---------------- Main ----------------
-if __name__ == "__main__":
+def main(has_graph_encoder=True, has_sequence_encoder=True):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using device: {device}")
 
     campus_list = ['13', '18', '38', '107', '151']
-    # campus_list = ['13']
     for campus_id in campus_list:
 
         print(f"Campus Zone ID: {campus_id}")
@@ -173,7 +172,7 @@ if __name__ == "__main__":
         num_users = max(s[0] for s in train_samples + valid_samples + test_samples) + 1
 
         model = MultiViewRecommender(num_users=num_users, num_items=num_items, embed_dim=64, device=device,
-                                    has_graph_encoder=True, has_sequence_encoder=True)
+                                    has_graph_encoder=has_graph_encoder, has_sequence_encoder=has_sequence_encoder)
 
         model = train_model(model, train_samples, valid_samples, num_users=num_users, num_items=num_items,
                             num_epochs=500, batch_size=4096, lr=1e-3, device=device, early_stop_patience=10)
@@ -191,7 +190,7 @@ if __name__ == "__main__":
         os.makedirs(save_dir, exist_ok=True)
 
         # 文件名加入模型名或数据集名也可以，这里简单用 test_results
-        save_path = os.path.join(save_dir, f"test_results_campus{campus_id}_{ts}.txt")
+        save_path = os.path.join(save_dir, f"graph_{has_graph_encoder}_seq_{has_sequence_encoder}_campus{campus_id}_{ts}.txt")
 
         # 写入文件
         with open(save_path, "w") as f:
@@ -200,3 +199,9 @@ if __name__ == "__main__":
                 f.write(f"{k}: {v:.4f}\n")
 
         print(f"测试结果已保存到: {save_path}")
+
+
+if __name__ == "__main__":
+    main(has_graph_encoder=True, has_sequence_encoder=False)
+    main(has_graph_encoder=False, has_sequence_encoder=True)
+    main(has_graph_encoder=True, has_sequence_encoder=True)

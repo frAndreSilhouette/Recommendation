@@ -10,7 +10,7 @@ def load_and_preprocess(file_path="交易数据.feather", campus_id=143):
     # df = df.iloc[:1000, :]
     # print(df["campus_id"].unique())
     df = df[df['campus_id']==campus_id]
-    df = df[df['order_date']<='2024-06-30']
+    # df = df[df['order_date']<='2024-06-30']
     print(f">>> Total interactions: {len(df)}")
     df = df[["user_id", "spu_id", "order_date"]]
 
