@@ -8,12 +8,13 @@ from tqdm import tqdm
 import datetime
 import os
 from time import time
+import json
 
 from sequence_loader import generate_sequence, build_sequences, load_and_preprocess, disturb_sequence
 from graph_adj_matrix import build_user_item_graph
 from graph_encoder import GraphConvolutionalEncoder
 from sequence_encoder import SequenceEncoder
-from evaluate import evaluate_model, hit_ndcg
+from evaluate import evaluate_model, hit_ndcg, recommendation
 from dataset import SequenceDataset, collate_fn
 from model import MultiViewRecommender
 
@@ -149,11 +150,13 @@ def main(has_graph_encoder=True, has_sequence_encoder=True):
     print(f"Using device: {device}")
 
     campus_list = ['13', '18', '38', '107', '151']
+    final_result_item={}
+    final_result_store={}
     for campus_id in campus_list:
 
         print(f"Campus Zone ID: {campus_id}")
 
-        df, item2newid = load_and_preprocess("交易数据.feather", campus_id)
+        df, item2newid, user_new2raw, item_new2raw, spuid2storeid = load_and_preprocess("交易数据.feather", campus_id)
         user_seqs = build_sequences(df)
         max_item_id = max(item2newid.values())
         train_samples, valid_samples, test_samples = generate_sequence(user_seqs, disturb=None, max_item_id=max_item_id)
@@ -198,7 +201,39 @@ def main(has_graph_encoder=True, has_sequence_encoder=True):
             for k, v in test_metrics.items():
                 f.write(f"{k}: {v:.4f}\n")
 
+        rec_users, indices_item = recommendation(model, test_samples, N=10,device=device)
+
+        result_one_campus_item = {user_new2raw[k]:[(item_new2raw[v] + '@' + spuid2storeid[item_new2raw[v]]) for v in rec_ls_temp] for k,rec_ls_temp in zip(rec_users, indices_item)}
+        final_result_item[campus_id] = result_one_campus_item
+
+        rec_users, indices_store = recommendation(model, test_samples, N=100,device=device)
+        rec_stores = [list(set([spuid2storeid[item_new2raw[v]] for v in rec_ls_temp])) for rec_ls_temp in indices_store]
+        result_one_campus_store = {user_new2raw[k]: stores[:10] for k, stores in zip(rec_users, rec_stores)}
+        final_result_store[campus_id] = result_one_campus_store
+
         print(f"测试结果已保存到: {save_path}")
+    
+    rec_res_folder = "rec_result"
+
+    if has_graph_encoder and has_sequence_encoder:
+        item_result_filepath = os.path.join(rec_res_folder, "2_item.json")
+        store_result_filepath = os.path.join(rec_res_folder, "2_store.json")
+    elif has_graph_encoder and not has_sequence_encoder:
+        item_result_filepath = os.path.join(rec_res_folder, "2_graph_item.json")
+        store_result_filepath = os.path.join(rec_res_folder, "2_graph_store.json")
+    elif has_sequence_encoder and not has_graph_encoder:
+        item_result_filepath = os.path.join(rec_res_folder, "2_seq_item.json")
+        store_result_filepath = os.path.join(rec_res_folder, "2_seq_store.json")
+
+    os.makedirs(rec_res_folder, exist_ok=True)
+
+    with open(item_result_filepath,"w",encoding="utf-8") as f:
+        json.dump(final_result_item,f,ensure_ascii=False,indent=2)
+
+    with open(store_result_filepath,"w",encoding="utf-8") as f:
+        json.dump(final_result_store,f,ensure_ascii=False,indent=2)
+
+    print("推荐结果保存完毕")
 
 
 if __name__ == "__main__":

@@ -2,3 +2,4 @@
 *.pt
 dataset/
 *.pyc
+rec_result/

@@ -40,3 +40,14 @@ def evaluate_model(model, test_samples, k_list=[5,10,20], device='cuda'):
         scores = model.predict(user_emb, item_emb)
         metrics = hit_ndcg(scores, test_targets, k_list=k_list)
     return metrics
+
+def recommendation(model, samples, N=10,device='cuda') :
+    users = [s[0] for s in samples]
+    seqs = [s[1] for s in samples]
+    model.eval()
+    with torch.no_grad():
+        user_emb, item_emb, _ = model(seqs, users)
+        scores = model.predict(user_emb, item_emb)
+        _, indices = scores.topk(N, dim=1)
+        indices = indices.cpu().numpy()
+    return users, indices
