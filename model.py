@@ -147,8 +147,18 @@ class MultiViewRecommender(nn.Module):
 
              # ---------------- Contrastive Loss ----------------
             if self.has_graph_encoder:
-                CL_loss_graph_user = self.info_nce_loss(graph_user_emb, graph_user_emb_cl)
-                CL_loss_graph_item = self.info_nce_loss(graph_item_emb, graph_item_emb_cl)
+                graph_user_emb_batch = graph_user_emb[user]
+                graph_user_emb_cl_batch = graph_user_emb_cl[user]
+
+                all_ids = set()
+                for seq_temp in seq :
+                    all_ids.update(seq_temp)
+                
+                item_idx_batch = torch.tensor(list(all_ids),dtype=torch.long).to(self.device)
+                graph_item_emb_batch = graph_item_emb[item_idx_batch]
+                graph_item_emb_cl_batch = graph_item_emb_cl[item_idx_batch]
+                CL_loss_graph_user = self.info_nce_loss(graph_user_emb_batch, graph_user_emb_cl_batch)
+                CL_loss_graph_item = self.info_nce_loss(graph_item_emb_batch, graph_item_emb_cl_batch)
                 CL_loss_graph = CL_loss_graph_user + CL_loss_graph_item
                 # time4 = time.time()
                 # print(f"InfoNCE用时 {time4-time3:.2f}s")

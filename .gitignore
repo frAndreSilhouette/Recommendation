@@ -2,3 +2,6 @@
 *.pt
 dataset/
 *.pyc
+rec_result/
+output.log
+run.log

@@ -17,6 +17,34 @@ from evaluate import evaluate_model, hit_ndcg
 from dataset import SequenceDataset, collate_fn
 from model import MultiViewRecommender
 
+def bpr_loss_from_full_matrix(pred_scores, target_tensor):
+    """
+    pred_scores: [N_user, N_item] (same device as model output)
+    target_tensor: [N_user]        (same device)
+    """
+
+    device = pred_scores.device
+
+    N_user, N_item = pred_scores.shape
+    user_idx = torch.arange(N_user, device=device)
+
+    # 正样本得分
+    pos_scores = pred_scores[user_idx, target_tensor]
+
+    # 负采样
+    neg_items = torch.randint(0, N_item, (N_user,), device=device)
+    mask = (neg_items == target_tensor)
+    while mask.any():
+        neg_items[mask] = torch.randint(0, N_item, (mask.sum(),), device=device)
+        mask = (neg_items == target_tensor)
+
+    # 负样本得分
+    neg_scores = pred_scores[user_idx, neg_items]
+
+    # BPR Loss
+    loss = -torch.mean(torch.log(torch.sigmoid(pos_scores - neg_scores) + 1e-8))
+    return loss
+
 # ---------------- 训练函数 ----------------
 def train_model(model, train_samples, valid_samples, num_users, num_items, num_epochs=10, batch_size=1024, lr=1e-3, device='cuda', early_stop_patience=5):
     """
@@ -84,7 +112,10 @@ def train_model(model, train_samples, valid_samples, num_users, num_items, num_e
             # print('sequence encoder grad:', model.seq_encoder.item_emb.requires_grad)
 
             target_tensor = target_batch.to(device)
-            pred_loss = F.cross_entropy(pred_scores, target_tensor)
+            if model.has_graph_encoder and (not model.has_sequence_encoder) :
+                pred_loss = bpr_loss_from_full_matrix(pred_scores, target_tensor)
+            else :
+                pred_loss = F.cross_entropy(pred_scores, target_tensor)
             l2_reg_loss = model.l2_reg_loss_weight * (
                 torch.sum(user_emb**2)/user_emb.shape[0] + torch.sum(item_emb**2)/item_emb.shape[0]
             )
